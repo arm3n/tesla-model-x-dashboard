@@ -2,7 +2,6 @@ import type { Listing, RawListing, Source } from "./scraper/types.ts";
 import { checkHw4, getSeatCountFromVin, getTrimFromVin } from "./vin/hw4-check.ts";
 import { decodeOptionCodes } from "./vin/option-codes.ts";
 import { computeCompleteness } from "./completeness.ts";
-import { verifyDuplicateUrls } from "./verify-urls.ts";
 
 /**
  * Detect black interior variants. Catches:
@@ -76,8 +75,10 @@ export async function normalize(
 ): Promise<Listing[]> {
   const now = new Date().toISOString();
 
-  // Verify URLs for VINs appearing in 2+ sources
-  const urlStatus = await verifyDuplicateUrls(rawListings);
+  // Skip slow URL verification — it makes HTTP requests for every duplicate-VIN
+  // URL (8s timeout each, 5 concurrent) which blocks normalization for minutes.
+  // URL verified status is just 1/14 completeness points; not worth the latency.
+  const urlStatus = new Map<string, boolean>();
 
   // Deduplicate by VIN — prefer most complete data, merge fields
   const byVin = new Map<string, RawListing[]>();
