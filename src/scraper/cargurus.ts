@@ -36,7 +36,7 @@ export async function scrapeCarGurus(): Promise<RawListing[]> {
   const results: RawListing[] = [];
   const seenVins = new Set<string>();
   let offset = 0;
-  const maxResults = 100;
+  const maxResults = 48; // API caps at 48 per page regardless of requested value
   const maxPages = 10;
 
   console.log("[CarGurus] Starting fetch...");
