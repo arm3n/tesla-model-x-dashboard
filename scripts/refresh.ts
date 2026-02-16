@@ -147,7 +147,7 @@ export async function refresh(
   log(`Normalizing ${allRaw.length} raw listings...`);
 
   const existing = getExistingListingsMap();
-  const normalized = normalize(allRaw, existing);
+  const normalized = await normalize(allRaw, existing);
   stats.total = normalized.length;
   log(`${normalized.length} unique listings after deduplication`);
 

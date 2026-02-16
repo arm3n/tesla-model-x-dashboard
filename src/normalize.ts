@@ -1,6 +1,8 @@
 import type { Listing, RawListing, Source } from "./scraper/types.ts";
 import { checkHw4, getSeatCountFromVin, getTrimFromVin } from "./vin/hw4-check.ts";
 import { decodeOptionCodes } from "./vin/option-codes.ts";
+import { computeCompleteness } from "./completeness.ts";
+import { verifyDuplicateUrls } from "./verify-urls.ts";
 
 /**
  * Detect black interior variants. Catches:
@@ -68,13 +70,16 @@ function isBadTitle(status: string | null | undefined): boolean {
   return SALVAGE_PATTERNS.test(status) || status.toLowerCase() === "branded";
 }
 
-export function normalize(
+export async function normalize(
   rawListings: RawListing[],
   existingListings?: Map<string, Listing>
-): Listing[] {
+): Promise<Listing[]> {
   const now = new Date().toISOString();
 
-  // Deduplicate by VIN — prefer most recent data, merge fields
+  // Verify URLs for VINs appearing in 2+ sources
+  const urlStatus = await verifyDuplicateUrls(rawListings);
+
+  // Deduplicate by VIN — prefer most complete data, merge fields
   const byVin = new Map<string, RawListing[]>();
   for (const raw of rawListings) {
     const vin = raw.vin.toUpperCase();
@@ -85,10 +90,15 @@ export function normalize(
   const listings: Listing[] = [];
 
   for (const [vin, raws] of byVin) {
-    // Pick best data — sort by source priority
-    const sorted = raws.sort(
-      (a, b) => SOURCE_PRIORITY[a.source] - SOURCE_PRIORITY[b.source]
-    );
+    // Score each raw listing by completeness, then source priority as tiebreaker
+    const sorted = raws.sort((a, b) => {
+      const aVerified = urlStatus.get(a.url) ?? true; // single-source VINs default to true
+      const bVerified = urlStatus.get(b.url) ?? true;
+      const aScore = computeCompleteness(a, aVerified);
+      const bScore = computeCompleteness(b, bVerified);
+      if (bScore !== aScore) return bScore - aScore; // higher completeness wins
+      return SOURCE_PRIORITY[a.source] - SOURCE_PRIORITY[b.source]; // lower priority number wins
+    });
 
     const primary = sorted[0]!;
 
@@ -145,6 +155,9 @@ export function normalize(
     // VIN position 8 definitively encodes Long Range (5) vs Plaid (6)
     const vinTrim = getTrimFromVin(vin);
 
+    const primaryUrlVerified = urlStatus.get(primary.url) ?? true;
+    const primaryScore = computeCompleteness(primary, primaryUrlVerified);
+
     listings.push({
       vin,
       source: primary.source,
@@ -166,6 +179,8 @@ export function normalize(
       isActive: true,
       titleStatus,
       accidentHistory,
+      completenessScore: primaryScore,
+      urlVerified: primaryUrlVerified,
     });
   }
 

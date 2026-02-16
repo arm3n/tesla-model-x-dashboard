@@ -1,5 +1,5 @@
 import { resolve } from "path";
-import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs } from "./db.ts";
+import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs } from "./db.ts";
 import { refresh } from "../scripts/refresh.ts";
 
 const PUBLIC_DIR = resolve(import.meta.dir, "../public");
@@ -76,6 +76,31 @@ const server = Bun.serve({
       }
       setHw4Override(body.vin, body.hw4Status);
       return Response.json({ success: true, vin: body.vin, hw4Status: body.hw4Status });
+    }
+
+    // Set URL override
+    if (url.pathname === "/api/url-override" && req.method === "POST") {
+      const body = await req.json() as { vin?: string; url?: string };
+      if (!body.vin || !body.url) {
+        return Response.json({ error: "vin and url required" }, { status: 400 });
+      }
+      setUrlOverride(body.vin, body.url);
+      return Response.json({ success: true, vin: body.vin, url: body.url });
+    }
+
+    // Remove URL override
+    if (url.pathname === "/api/url-override" && req.method === "DELETE") {
+      const body = await req.json() as { vin?: string };
+      if (!body.vin) {
+        return Response.json({ error: "vin required" }, { status: 400 });
+      }
+      removeUrlOverride(body.vin);
+      return Response.json({ success: true, vin: body.vin });
+    }
+
+    // List URL overrides
+    if (url.pathname === "/api/url-overrides") {
+      return Response.json({ overrides: getUrlOverrides() });
     }
 
     // Favorite a VIN

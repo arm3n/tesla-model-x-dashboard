@@ -92,7 +92,7 @@ export async function scrapeCarGurus(): Promise<RawListing[]> {
         results.push({
           vin,
           source: "cargurus",
-          url: `https://www.cargurus.com/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action?listingId=${item.id}`,
+          url: `https://www.cargurus.com/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action?sourceContext=carGurusHomePageModel&entitySelectingHelper.selectedEntity=d2132&zip=10001#listing=${item.id}/NONE`,
           price: item.price ?? 0,
           mileage: item.mileage ?? 0,
           year: item.carYear ?? 0,

@@ -31,6 +31,8 @@ export interface Listing {
   isActive: boolean;
   titleStatus: string | null;
   accidentHistory: "clean" | "accident" | "unknown";
+  completenessScore?: number;
+  urlVerified?: boolean;
 }
 
 export interface RawListing {

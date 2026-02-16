@@ -34,13 +34,17 @@ export function getDb(): Database {
       lastSeen TEXT NOT NULL,
       isActive INTEGER NOT NULL DEFAULT 1,
       titleStatus TEXT,
-      accidentHistory TEXT NOT NULL DEFAULT 'unknown'
+      accidentHistory TEXT NOT NULL DEFAULT 'unknown',
+      completeness_score INTEGER NOT NULL DEFAULT 0,
+      url_verified INTEGER NOT NULL DEFAULT 0
     )
   `);
 
   // Migrate: add columns if missing (for existing DBs)
   try { _db.exec("ALTER TABLE listings ADD COLUMN titleStatus TEXT"); } catch {}
   try { _db.exec("ALTER TABLE listings ADD COLUMN accidentHistory TEXT NOT NULL DEFAULT 'unknown'"); } catch {}
+  try { _db.exec("ALTER TABLE listings ADD COLUMN completeness_score INTEGER NOT NULL DEFAULT 0"); } catch {}
+  try { _db.exec("ALTER TABLE listings ADD COLUMN url_verified INTEGER NOT NULL DEFAULT 0"); } catch {}
 
   _db.exec(`
     CREATE TABLE IF NOT EXISTS price_history (
@@ -76,6 +80,14 @@ export function getDb(): Database {
     CREATE TABLE IF NOT EXISTS hw4_overrides (
       vin TEXT PRIMARY KEY,
       hw4Status TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    )
+  `);
+
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS url_overrides (
+      vin TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     )
   `);
@@ -137,44 +149,55 @@ export function upsertListings(listings: Listing[]): void {
       ELSE 99
     END`;
 
+  // "New wins" condition: new listing has higher completeness, OR same completeness but better source priority
+  const NEW_WINS = `(
+    $completenessScore > listings.completeness_score
+    OR ($completenessScore = listings.completeness_score AND ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL})
+  )`;
+
   const upsert = db.prepare(`
     INSERT INTO listings (
       vin, source, url, price, mileage, year, trim,
       exteriorColor, interiorColor, seatCount, hw4Status,
       dealerName, dealerLocation, imageUrl, listedDate,
-      firstSeen, lastSeen, isActive, titleStatus, accidentHistory
+      firstSeen, lastSeen, isActive, titleStatus, accidentHistory,
+      completeness_score, url_verified
     ) VALUES (
       $vin, $source, $url, $price, $mileage, $year, $trim,
       $exteriorColor, $interiorColor, $seatCount, $hw4Status,
       $dealerName, $dealerLocation, $imageUrl, $listedDate,
-      $firstSeen, $lastSeen, $isActive, $titleStatus, $accidentHistory
+      $firstSeen, $lastSeen, $isActive, $titleStatus, $accidentHistory,
+      $completenessScore, $urlVerified
     )
     ON CONFLICT(vin) DO UPDATE SET
-      source = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $source ELSE listings.source END,
-      url = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $url ELSE listings.url END,
-      price = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $price ELSE listings.price END,
-      mileage = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $mileage ELSE listings.mileage END,
-      year = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $year ELSE listings.year END,
-      trim = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $trim ELSE listings.trim END,
+      source = CASE WHEN ${NEW_WINS} THEN $source ELSE listings.source END,
+      url = CASE
+        WHEN vin IN (SELECT vin FROM url_overrides) THEN (SELECT url FROM url_overrides WHERE url_overrides.vin = listings.vin)
+        WHEN ${NEW_WINS} THEN $url
+        ELSE listings.url END,
+      price = CASE WHEN ${NEW_WINS} THEN $price ELSE listings.price END,
+      mileage = CASE WHEN ${NEW_WINS} THEN $mileage ELSE listings.mileage END,
+      year = CASE WHEN ${NEW_WINS} THEN $year ELSE listings.year END,
+      trim = CASE WHEN ${NEW_WINS} THEN $trim ELSE listings.trim END,
       exteriorColor = CASE
-        WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $exteriorColor
+        WHEN ${NEW_WINS} THEN $exteriorColor
         WHEN listings.exteriorColor = '' THEN $exteriorColor
         ELSE listings.exteriorColor END,
       interiorColor = CASE
-        WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $interiorColor
+        WHEN ${NEW_WINS} THEN $interiorColor
         WHEN listings.interiorColor = '' THEN $interiorColor
         ELSE listings.interiorColor END,
       seatCount = COALESCE(
-        CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $seatCount ELSE listings.seatCount END,
+        CASE WHEN ${NEW_WINS} THEN $seatCount ELSE listings.seatCount END,
         $seatCount, listings.seatCount),
       hw4Status = CASE
         WHEN vin IN (SELECT vin FROM hw4_overrides) THEN listings.hw4Status
         ELSE $hw4Status
       END,
-      dealerName = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $dealerName ELSE listings.dealerName END,
-      dealerLocation = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $dealerLocation ELSE listings.dealerLocation END,
+      dealerName = CASE WHEN ${NEW_WINS} THEN $dealerName ELSE listings.dealerName END,
+      dealerLocation = CASE WHEN ${NEW_WINS} THEN $dealerLocation ELSE listings.dealerLocation END,
       imageUrl = COALESCE(
-        CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $imageUrl ELSE listings.imageUrl END,
+        CASE WHEN ${NEW_WINS} THEN $imageUrl ELSE listings.imageUrl END,
         $imageUrl, listings.imageUrl),
       listedDate = COALESCE($listedDate, listings.listedDate),
       lastSeen = $lastSeen,
@@ -183,7 +206,9 @@ export function upsertListings(listings: Listing[]): void {
       accidentHistory = CASE
         WHEN $accidentHistory != 'unknown' THEN $accidentHistory
         ELSE COALESCE(listings.accidentHistory, 'unknown')
-      END
+      END,
+      completeness_score = CASE WHEN ${NEW_WINS} THEN $completenessScore ELSE listings.completeness_score END,
+      url_verified = CASE WHEN ${NEW_WINS} THEN $urlVerified ELSE listings.url_verified END
   `);
 
   const insertPrice = db.prepare(`
@@ -237,6 +262,8 @@ export function upsertListings(listings: Listing[]): void {
         $isActive: listing.isActive ? 1 : 0,
         $titleStatus: sn(listing.titleStatus),
         $accidentHistory: s(listing.accidentHistory) || "unknown",
+        $completenessScore: listing.completenessScore ?? 0,
+        $urlVerified: listing.urlVerified ? 1 : 0,
       });
     }
   });
@@ -379,6 +406,31 @@ export function getHw4Overrides(): Map<string, string> {
   const db = getDb();
   const rows = db.prepare("SELECT vin, hw4Status FROM hw4_overrides").all() as { vin: string; hw4Status: string }[];
   return new Map(rows.map(r => [r.vin, r.hw4Status]));
+}
+
+// --- URL overrides ---
+
+export function setUrlOverride(vin: string, url: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT OR REPLACE INTO url_overrides (vin, url, updatedAt)
+     VALUES ($vin, $url, $updatedAt)`
+  ).run({ $vin: vin, $url: url, $updatedAt: new Date().toISOString() });
+  // Apply immediately to the listings table
+  db.prepare("UPDATE listings SET url = $url WHERE vin = $vin")
+    .run({ $url: url, $vin: vin });
+}
+
+export function removeUrlOverride(vin: string): void {
+  const db = getDb();
+  db.prepare("DELETE FROM url_overrides WHERE vin = $vin").run({ $vin: vin });
+}
+
+export function getUrlOverrides(): { vin: string; url: string; updatedAt: string }[] {
+  const db = getDb();
+  return db
+    .prepare("SELECT vin, url, updatedAt FROM url_overrides ORDER BY updatedAt DESC")
+    .all() as { vin: string; url: string; updatedAt: string }[];
 }
 
 // --- Favorites ---
