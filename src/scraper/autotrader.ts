@@ -27,13 +27,50 @@ interface AutotraderListing {
   firstDateSeen?: string;
 }
 
+/**
+ * Autotrader caps API results at 400 per query. To get more coverage,
+ * we run multiple searches with different sort orders so each returns
+ * a different slice of the inventory, then deduplicate by VIN.
+ */
+const SORT_STRATEGIES = [
+  "derivedpriceDESC",  // expensive first
+  "derivedpriceASC",   // cheap first
+  "mileageASC",        // low mileage first
+  "mileageDESC",       // high mileage first
+  "yearDESC",          // newest first
+  "yearASC",           // oldest first
+  "distanceASC",       // closest first (varies by zip)
+  "bestMatchDESC",     // relevance/default
+];
+
 export async function scrapeAutotrader(): Promise<RawListing[]> {
+  const seenVins = new Set<string>();
+  const allResults: RawListing[] = [];
+
+  console.log("[Autotrader] Starting API fetch...");
+
+  for (const sortBy of SORT_STRATEGIES) {
+    const stratResults = await fetchAutotraderPage(sortBy, seenVins);
+    allResults.push(...stratResults);
+    if (SORT_STRATEGIES.indexOf(sortBy) < SORT_STRATEGIES.length - 1) {
+      await delay(5000 + Math.random() * 3000); // pause between strategies
+    }
+  }
+
+  console.log(`[Autotrader] Done — ${allResults.length} listings`);
+  return allResults;
+}
+
+async function fetchAutotraderPage(
+  sortBy: string,
+  seenVins: Set<string>
+): Promise<RawListing[]> {
   const results: RawListing[] = [];
   let firstRecord = 0;
   const pageSize = 100;
   let totalCount = Infinity;
 
-  console.log("[Autotrader] Starting API fetch...");
+  console.log(`[Autotrader] Strategy: ${sortBy}`);
 
   while (firstRecord < totalCount) {
     const params = new URLSearchParams({
@@ -44,7 +81,7 @@ export async function scrapeAutotrader(): Promise<RawListing[]> {
       zip: "10001",
       numRecords: String(pageSize),
       firstRecord: String(firstRecord),
-      sortBy: "derivedpriceDESC",
+      sortBy,
       channel: "ATC",
     });
 
@@ -80,11 +117,37 @@ export async function scrapeAutotrader(): Promise<RawListing[]> {
       break;
     }
 
-    const data = await res.json();
+    let data: any;
+    try {
+      data = await res.json();
+    } catch {
+      // Autotrader sometimes returns HTML instead of JSON (soft rate-limit)
+      console.log(`[Autotrader] Non-JSON response at offset ${firstRecord}, retrying after delay...`);
+      await delay(8000 + Math.random() * 4000);
+      try {
+        const retry = await fetch(`${API_URL}?${params}`, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            Accept: "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            Referer: "https://www.autotrader.com/cars-for-sale/used-cars/tesla/model-x",
+          },
+          signal: AbortSignal.timeout(30_000),
+        });
+        data = await retry.json();
+      } catch {
+        console.log(`[Autotrader] Retry also failed, stopping at ${results.length} listings`);
+        break;
+      }
+    }
     totalCount = data.totalResultCount ?? 0;
     const listings: AutotraderListing[] = data.listings ?? [];
 
-    if (listings.length === 0) break;
+    if (listings.length === 0) {
+      console.log(`[Autotrader] Empty listings at offset ${firstRecord}, totalResultCount=${totalCount}`);
+      break;
+    }
 
     // Autotrader API uses complex objects: {name}, {value}, {label}, etc.
     const safeNum = (v: unknown): number => {
@@ -94,10 +157,14 @@ export async function scrapeAutotrader(): Promise<RawListing[]> {
       return 0;
     };
 
+    let newOnPage = 0;
     for (const item of listings) {
       const raw = item as any;
       const vin = (typeof raw.vin === "string" ? raw.vin : "").toUpperCase();
       if (!vin || vin.length !== 17) continue;
+      if (seenVins.has(vin)) continue;
+      seenVins.add(vin);
+      newOnPage++;
 
       // Trim: raw.atTrim (string) or raw.trim.name (object)
       const trim = raw.atTrim ?? raw.trim?.name ?? raw.trimName ?? "";
@@ -168,17 +235,23 @@ export async function scrapeAutotrader(): Promise<RawListing[]> {
     }
 
     console.log(
-      `[Autotrader] Fetched ${firstRecord}-${firstRecord + listings.length} (${results.length}/${totalCount})`
+      `[Autotrader] Fetched ${firstRecord}-${firstRecord + listings.length} (+${newOnPage} new, ${results.length} total, sort=${sortBy})`
     );
 
     firstRecord += listings.length;
 
+    // Skip remaining pages if this page found no new VINs
+    if (newOnPage === 0) {
+      console.log(`[Autotrader] No new VINs on this page, skipping rest of ${sortBy}`);
+      break;
+    }
+
     if (firstRecord < totalCount) {
-      await delay(2000 + Math.random() * 1000);
+      await delay(4000 + Math.random() * 3000);
     }
   }
 
-  console.log(`[Autotrader] Done — ${results.length} listings`);
+  console.log(`[Autotrader] Strategy ${sortBy}: ${results.length} new listings`);
   return results;
 }
 
