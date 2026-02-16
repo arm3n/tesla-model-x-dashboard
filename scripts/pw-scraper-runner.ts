@@ -18,22 +18,6 @@ async function run() {
   let results: any[];
 
   switch (scraperName) {
-    case "tesla": {
-      const { scrapeTesla } = await import("../src/scraper/tesla.ts");
-      results = await scrapeTesla();
-      break;
-    }
-    case "truecar": {
-      // TrueCar now uses direct fetch, no Playwright needed
-      const { scrapeTrueCar } = await import("../src/scraper/truecar.ts");
-      results = await scrapeTrueCar();
-      break;
-    }
-    case "edmunds": {
-      const { scrapeEdmunds } = await import("../src/scraper/edmunds.ts");
-      results = await scrapeEdmunds();
-      break;
-    }
     case "carfax": {
       const { scrapeCarfax } = await import("../src/scraper/carfax.ts");
       results = await scrapeCarfax();
