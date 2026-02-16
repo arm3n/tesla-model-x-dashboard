@@ -28,10 +28,9 @@ function parseItem(item: any): RawListing | null {
     ? `${dealerCity}, ${dealerState}`
     : dealerCity || dealerState;
 
-  // Build Edmunds VDP URL
-  const slug = (item.style ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  const listingUrl = year && slug
-    ? `https://www.edmunds.com/tesla/model-x/${year}/${slug}/vin/${vin}/`
+  // Build Edmunds VDP URL (canonical format: /tesla/model-x/{year}/vin/{VIN}/)
+  const listingUrl = year
+    ? `https://www.edmunds.com/tesla/model-x/${year}/vin/${vin}/`
     : `https://www.edmunds.com/tesla/model-x/inventory/?vin=${vin}`;
 
   // Map history fields
