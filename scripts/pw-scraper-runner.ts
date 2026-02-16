@@ -24,6 +24,7 @@ async function run() {
       break;
     }
     case "truecar": {
+      // TrueCar now uses direct fetch, no Playwright needed
       const { scrapeTrueCar } = await import("../src/scraper/truecar.ts");
       results = await scrapeTrueCar();
       break;
@@ -44,6 +45,7 @@ async function run() {
       break;
     }
     case "cars.com": {
+      // Cars.com now uses direct fetch, no Playwright needed
       const { scrapeCarsCom } = await import("../src/scraper/cars-com.ts");
       results = await scrapeCarsCom();
       break;

@@ -4,6 +4,16 @@ import { runScraperInNode } from "./run-in-node.ts";
 
 const BASE_URL = "https://www.truecar.com/used-cars-for-sale/listings/tesla/model-x/";
 
+const FETCH_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+};
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -50,31 +60,42 @@ function extractFromHtml(html: string): RawListing[] {
   if (listings.length === 0) {
     $('[data-test="usedListing"], [data-test="vehicleCard"], .listing-card, [data-qa="used-listing"]').each((_i, el) => {
       const card = $(el);
-      const vin = (
-        card.attr("data-vin") ??
-        card.find('[data-test="vin"], [data-qa="vin"]').text().trim()
-      ).toUpperCase();
+
+      // Extract VIN from listing URL (TrueCar embeds VIN in /listing/{VIN}/ path)
+      let vin = (card.attr("data-vin") ?? "").toUpperCase();
+      if (!vin || vin.length !== 17) {
+        vin = card.find('[data-test="vin"], [data-qa="vin"]').text().trim().toUpperCase();
+      }
+      const listingLink = card.find('a[href*="/listing/"]').first();
+      const href = listingLink.attr("href") ?? card.find("a").first().attr("href") ?? "";
+      if ((!vin || vin.length !== 17) && href) {
+        const vinMatch = href.match(/\/listing\/([A-HJ-NPR-Z0-9]{17})\//i);
+        if (vinMatch) vin = vinMatch[1]!.toUpperCase();
+      }
       if (!vin || vin.length !== 17) return;
 
-      const linkEl = card.find("a").first();
-      const href = linkEl.attr("href") ?? "";
       const cardUrl = href.startsWith("http") ? href : `https://www.truecar.com${href}`;
 
-      const priceText = card.find('[data-test="vehicleCardPricingBlockPrice"], .vehicle-card-price, [data-qa="price"]').text();
+      const priceText = card.find('[data-test="vehicleCardPricingPrice"], [data-test="vehicleCardPricingBlockPrice"], [data-qa="price"]').text();
       const price = parseInt(priceText.replace(/[^0-9]/g, ""), 10) || 0;
 
-      const mileageText = card.find('[data-test="vehicleCardMileage"], .mileage, [data-qa="mileage"]').text();
-      const mileage = parseInt(mileageText.replace(/[^0-9]/g, ""), 10) || 0;
+      const cardText = card.text();
+      const mileageMatch = cardText.match(/([\d,]+)\s*mi(?:\s|·)/);
+      const mileage = parseInt((mileageMatch?.[1] ?? "").replace(/,/g, ""), 10) || 0;
 
-      const title = card.find('[data-test="vehicleCardTrim"], .vehicle-title, h2, h3').text().trim();
-      const yearMatch = title.match(/^(\d{4})/);
+      const title = card.find('[data-test="vehicleCardInfo"], [data-test="vehicleCardTrim"], h2, h3').text().trim();
+      const yearMatch = title.match(/(\d{4})/);
       const year = yearMatch ? parseInt(yearMatch[1], 10) : 0;
-      const trimMatch = title.match(/Model X\s+(.+)/i);
+      // Trim is between the title and mileage info (e.g. "75D", "Long Range Plus")
+      const trimMatch = cardText.match(/Model\s*X\s*\n?\s*([^\n·]+?)(?:Used|New|\d[\d,]*\s*mi)/i);
       const trim = trimMatch?.[1]?.trim() ?? "";
 
       const extColor = card.find('[data-test="vehicleCardColor"], [data-qa="exteriorColor"]').text().trim();
-      const dealer = card.find('[data-test="vehicleCardDealerName"], .dealer-name').text().trim();
-      const location = card.find('[data-test="vehicleCardDealerLocation"], .dealer-location').text().trim();
+      // Dealer and location are in format "DealerName - City, ST"
+      const dealerMatch = cardText.match(/([A-Z][A-Za-z\s&'.]+(?:Motors|Auto|Cars|Group|Inc|LLC|Dealership|Motorsport|Gallery)[A-Za-z\s&'.]*)\s*[-–]\s*([A-Za-z\s]+,\s*[A-Z]{2})/i)
+        ?? cardText.match(/([A-Z][^\n]{3,40})\s*[-–]\s*([A-Za-z\s]+,\s*[A-Z]{2})/i);
+      const dealer = dealerMatch?.[1]?.trim() ?? "";
+      const location = dealerMatch?.[2]?.trim() ?? "";
 
       const imgEl = card.find("img").first();
       const imageUrl = imgEl.attr("src") || imgEl.attr("data-src") || null;
@@ -102,70 +123,46 @@ function extractFromHtml(html: string): RawListing[] {
 }
 
 export async function scrapeTrueCar(): Promise<RawListing[]> {
+  // Bun's TLS fingerprint gets blocked by TrueCar — delegate to Node.js
   if (typeof globalThis.Bun !== "undefined") {
     return runScraperInNode("truecar");
   }
 
   const results: RawListing[] = [];
+  const maxPages = 20;
 
-  let browser;
-  try {
-    const { chromium } = await import("playwright");
-    browser = await chromium.launch({ headless: true, timeout: 30_000 });
-    const context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      viewport: { width: 1920, height: 1080 },
-    });
+  for (let pg = 1; pg <= maxPages; pg++) {
+    const url = pg === 1 ? BASE_URL : `${BASE_URL}?page=${pg}`;
 
-    const maxPages = 20;
-
-    for (let pg = 1; pg <= maxPages; pg++) {
-      const url = pg === 1 ? BASE_URL : `${BASE_URL}?page=${pg}`;
-      const tab = await context.newPage();
-
-      try {
-        await tab.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-        await delay(3000);
-
-        // Scroll to load lazy content
-        for (let i = 0; i < 5; i++) {
-          await tab.evaluate(() => window.scrollBy(0, 800));
-          await delay(800);
-        }
-
-        const html = await tab.content();
-        const pageListings = extractFromHtml(html);
-
-        if (pageListings.length === 0) {
-          console.log(`[TrueCar] No listings on page ${pg}, stopping`);
-          await tab.close();
-          break;
-        }
-
-        results.push(...pageListings);
-        console.log(`[TrueCar] Page ${pg}: ${pageListings.length} listings (total: ${results.length})`);
-      } catch (err) {
-        console.error(`[TrueCar] Error on page ${pg}:`, err);
-        await tab.close();
+    try {
+      const res = await fetch(url, { headers: FETCH_HEADERS });
+      if (!res.ok) {
+        console.log(`[TrueCar] Page ${pg} returned ${res.status}, stopping`);
         break;
       }
 
-      await tab.close();
+      const html = await res.text();
+      const pageListings = extractFromHtml(html);
 
-      if (pg < maxPages) {
-        await delay(3000 + Math.random() * 2000);
+      if (pageListings.length === 0) {
+        console.log(`[TrueCar] No listings on page ${pg}, stopping`);
+        break;
       }
+
+      results.push(...pageListings);
+      console.log(`[TrueCar] Page ${pg}: ${pageListings.length} listings (total: ${results.length})`);
+    } catch (err) {
+      console.error(`[TrueCar] Error on page ${pg}:`, err);
+      break;
     }
 
-    await browser.close();
-  } catch (err) {
-    console.error("[TrueCar] Playwright error:", err);
-    if (browser) await browser.close();
+    if (pg < maxPages) {
+      await delay(2000 + Math.random() * 1500);
+    }
   }
 
   if (results.length === 0) {
-    console.log("[TrueCar] 0 listings — likely blocked by CAPTCHA (Press & Hold)");
+    console.log("[TrueCar] 0 listings found");
   } else {
     console.log(`[TrueCar] Done — ${results.length} listings`);
   }
