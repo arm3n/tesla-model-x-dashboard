@@ -1,270 +1,239 @@
 import type { RawListing } from "./types.ts";
-import { runScraperInNode } from "./run-in-node.ts";
+
+const TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token";
+const SEARCH_URL =
+  "https://api.ebay.com/buy/browse/v1/item_summary/search";
+const ITEM_URL = "https://api.ebay.com/buy/browse/v1/item";
+
+let cachedToken: { token: string; expiresAt: number } | null = null;
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function getAppToken(): Promise<string> {
+  if (cachedToken && Date.now() < cachedToken.expiresAt) {
+    return cachedToken.token;
+  }
+
+  const clientId = process.env.EBAY_CLIENT_ID;
+  const clientSecret = process.env.EBAY_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new Error("EBAY_CLIENT_ID and EBAY_CLIENT_SECRET must be set");
+  }
+
+  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString(
+    "base64"
+  );
+
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Authorization: `Basic ${credentials}`,
+    },
+    body: "grant_type=client_credentials&scope=https%3A%2F%2Fapi.ebay.com%2Foauth%2Fapi_scope",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`eBay OAuth failed (${res.status}): ${text}`);
+  }
+
+  const data = (await res.json()) as {
+    access_token: string;
+    expires_in: number;
+  };
+
+  cachedToken = {
+    token: data.access_token,
+    // Refresh 5 min early to avoid edge cases
+    expiresAt: Date.now() + (data.expires_in - 300) * 1000,
+  };
+
+  return cachedToken.token;
+}
+
+interface EbaySearchItem {
+  itemId: string;
+  title: string;
+  price?: { value: string; currency: string };
+  condition?: string;
+  image?: { imageUrl: string };
+  itemLocation?: { city?: string; stateOrProvince?: string; postalCode?: string };
+  seller?: { username?: string; feedbackPercentage?: string };
+  itemWebUrl?: string;
+  itemCreationDate?: string;
+}
+
+interface EbaySearchResponse {
+  total: number;
+  offset: number;
+  limit: number;
+  itemSummaries?: EbaySearchItem[];
+  next?: string;
+  warnings?: { message: string }[];
+}
+
+interface EbayAspect {
+  name: string;
+  value: string;
+}
+
+interface EbayItemDetail {
+  localizedAspects?: EbayAspect[];
+}
+
+function getAspect(aspects: EbayAspect[], ...names: string[]): string {
+  for (const name of names) {
+    const found = aspects.find(
+      (a) => a.name.toLowerCase().includes(name.toLowerCase())
+    );
+    if (found?.value) return found.value;
+  }
+  return "";
+}
+
 export async function scrapeEbayMotors(): Promise<RawListing[]> {
-  if (typeof globalThis.Bun !== "undefined") {
-    return runScraperInNode("ebay");
+  const clientId = process.env.EBAY_CLIENT_ID;
+  const clientSecret = process.env.EBAY_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    console.error("[eBay] No API credentials found (EBAY_CLIENT_ID / EBAY_CLIENT_SECRET)");
+    return [];
   }
 
-  const results: RawListing[] = [];
+  console.log("[eBay] Starting Browse API fetch...");
 
-  console.log("[eBay] Starting Playwright scrape...");
-
-  let browser;
+  let token: string;
   try {
-    const { launchStealthBrowser } = await import("./stealth-browser.ts");
-    const launched = await launchStealthBrowser();
-    browser = launched.browser;
-    const context = launched.context;
-
-    const maxPages = 5;
-
-    for (let pg = 1; pg <= maxPages; pg++) {
-      const searchUrl =
-        pg === 1
-          ? "https://www.ebay.com/sch/Cars-Trucks/6001/i.html?_nkw=Tesla+Model+X&LH_ItemCondition=3000&_sop=15&_ipg=120&rt=nc"
-          : `https://www.ebay.com/sch/Cars-Trucks/6001/i.html?_nkw=Tesla+Model+X&LH_ItemCondition=3000&_sop=15&_ipg=120&rt=nc&_pgn=${pg}`;
-
-      const tab = await context.newPage();
-
-      try {
-        await tab.goto(searchUrl, {
-          waitUntil: "domcontentloaded",
-          timeout: 30_000,
-        });
-        await delay(3000);
-
-        // Scroll to load lazy images
-        for (let i = 0; i < 8; i++) {
-          await tab.evaluate(() => window.scrollBy(0, 800));
-          await delay(800);
-        }
-
-        // eBay 2025+ uses li.s-card with s-card__title, innerText has structured data
-        const pageItems = await tab.evaluate(() => {
-          const cards = document.querySelectorAll("li.s-card");
-          const items: any[] = [];
-
-          for (const card of cards) {
-            const allText = card.innerText ?? "";
-
-            // Skip promoted/ad cards ("Shop on eBay")
-            if (allText.includes("Shop on eBay")) continue;
-            if (!allText.toLowerCase().includes("model x")) continue;
-
-            const linkEl = card.querySelector(
-              "a.s-card__link"
-            ) as HTMLAnchorElement;
-            const href = linkEl?.href ?? "";
-            if (!href || !href.includes("/itm/")) continue;
-
-            const titleEl = card.querySelector(".s-card__title");
-            const title = titleEl?.textContent?.trim() ?? "";
-
-            // Extract structured data from card text
-            const priceMatch = allText.match(
-              /\$([\d,]+(?:\.\d{2})?)/
-            );
-            const yearMatch = allText.match(/Year:\s*(\d{4})/);
-            const milesMatch = allText.match(
-              /Miles:\s*([\d,]+)/
-            );
-            const mileageFromTitle = title.match(
-              /([\d,]+)\s*mi/i
-            );
-
-            const imgEl = card.querySelector("img") as HTMLImageElement;
-            const imageUrl =
-              imgEl?.src || imgEl?.getAttribute("data-src") || null;
-
-            // Location from text
-            const locationMatch = allText.match(
-              /Located in\s+(.+?)(?:\n|$)/
-            );
-
-            // Seller info from subtitle
-            const subtitleEl = card.querySelector(".s-card__subtitle");
-            const subtitle = subtitleEl?.textContent?.trim() ?? "";
-
-            items.push({
-              title: title.replace(/Opens in a new window or tab/g, "").replace(/New Listing/gi, "").trim(),
-              href,
-              price: priceMatch?.[1] ?? "",
-              year: yearMatch?.[1] ?? "",
-              mileage: milesMatch?.[1] ?? mileageFromTitle?.[1] ?? "",
-              subtitle,
-              imageUrl,
-              location: locationMatch?.[1]?.trim() ?? "",
-              allText: allText.substring(0, 500),
-            });
-          }
-          return items;
-        });
-
-        if (pageItems.length === 0) {
-          console.log(`[eBay] No listings on page ${pg}, stopping`);
-          await tab.close();
-          break;
-        }
-
-        for (const item of pageItems) {
-          const title = item.title ?? "";
-          const yearFromField = parseInt(item.year, 10) || 0;
-          const yearFromTitle = title.match(/\b(20\d{2})\b/);
-          const year =
-            yearFromField || (yearFromTitle ? parseInt(yearFromTitle[1], 10) : 0);
-
-          const trimMatch = title.match(
-            /model x\s+(.+?)(?:\s+\d|$|\s+[-–]|\s+with)/i
-          );
-          const trim = trimMatch?.[1]?.trim() ?? "";
-
-          const price =
-            Math.round(parseFloat((item.price ?? "").replace(/,/g, "")) || 0);
-          const mileage =
-            parseInt((item.mileage ?? "").replace(/[^0-9]/g, ""), 10) || 0;
-
-          // Try to find VIN in the text (17 chars, no I/O/Q)
-          const vinMatch = item.allText.match(
-            /\b([A-HJ-NPR-Z0-9]{17})\b/
-          );
-
-          results.push({
-            vin: vinMatch?.[1]?.toUpperCase() ?? "",
-            source: "ebay",
-            url: item.href,
-            price,
-            mileage,
-            year,
-            trim,
-            exteriorColor: "",
-            interiorColor: "",
-            seatCount: null,
-            dealerName: item.subtitle ?? "",
-            dealerLocation: item.location ?? "",
-            imageUrl: item.imageUrl,
-            listedDate: null,
-          });
-        }
-
-        console.log(
-          `[eBay] Page ${pg}: ${pageItems.length} items (total collected: ${results.length})`
-        );
-      } catch (err) {
-        console.error(`[eBay] Error on page ${pg}:`, err);
-        await tab.close();
-        break;
-      }
-
-      await tab.close();
-
-      if (pg < maxPages) {
-        await delay(2000 + Math.random() * 2000);
-      }
-    }
-
-    // Fetch detail pages for items to get VIN + colors
-    // VINs are rarely in search results so detail pages are essential
-    const needVin = results.filter((r) => !r.vin);
-    const detailLimit = Math.min(needVin.length, 50);
-
-    if (detailLimit > 0) {
-      console.log(`[eBay] Fetching ${detailLimit} detail pages for VINs...`);
-      for (let i = 0; i < detailLimit; i++) {
-        const listing = needVin[i];
-        const detailPage = await context.newPage();
-        try {
-          await detailPage.goto(listing.url, {
-            waitUntil: "domcontentloaded",
-            timeout: 20_000,
-          });
-          await delay(1500);
-
-          const specs = await detailPage.evaluate(() => {
-            const result: Record<string, string> = {};
-
-            // New eBay layout: ux-labels-values pairs
-            const labels = document.querySelectorAll(
-              ".ux-labels-values__labels-content"
-            );
-            const values = document.querySelectorAll(
-              ".ux-labels-values__values-content"
-            );
-            for (let j = 0; j < labels.length; j++) {
-              const label =
-                labels[j]?.textContent?.trim().toLowerCase() ?? "";
-              const value = values[j]?.textContent?.trim() ?? "";
-              if (label && value) result[label] = value;
-            }
-
-            // Fallback: older table layout
-            if (Object.keys(result).length === 0) {
-              const rows = document.querySelectorAll(
-                ".ux-layout-section__textual-display--itemId .ux-textspans"
-              );
-              for (let j = 0; j < rows.length - 1; j += 2) {
-                const label =
-                  rows[j]?.textContent?.trim().toLowerCase() ?? "";
-                const value = rows[j + 1]?.textContent?.trim() ?? "";
-                if (label && value) result[label] = value;
-              }
-            }
-
-            return result;
-          });
-
-          // Extract VIN
-          const vinKey = Object.keys(specs).find(
-            (k) => k.includes("vin")
-          );
-          if (vinKey && specs[vinKey].length === 17) {
-            listing.vin = specs[vinKey].toUpperCase();
-          }
-          if (specs["exterior color"])
-            listing.exteriorColor = specs["exterior color"];
-          if (specs["interior color"])
-            listing.interiorColor = specs["interior color"];
-          if (specs["mileage"]) {
-            const m = parseInt(
-              specs["mileage"].replace(/[^0-9]/g, ""),
-              10
-            );
-            if (m > 0) listing.mileage = m;
-          }
-          if (specs["vehicle title"]) {
-            listing.titleStatus = specs["vehicle title"]
-              .toLowerCase()
-              .includes("clean")
-              ? "clean"
-              : specs["vehicle title"];
-          }
-        } catch {
-          // detail page failed, skip
-        }
-        await detailPage.close();
-        if (i < detailLimit - 1) await delay(800);
-      }
-    }
-
-    // Only keep listings with valid VINs
-    const validResults = results.filter(
-      (r) => r.vin && r.vin.length === 17
-    );
-
-    await browser.close();
-
-    console.log(
-      `[eBay] Done — ${validResults.length} listings with VINs (${results.length} total scraped)`
-    );
-    return validResults;
+    token = await getAppToken();
   } catch (err) {
-    console.error("[eBay] Playwright error:", err);
-    if (browser) await browser.close();
+    console.error("[eBay] OAuth error:", err);
+    return [];
   }
 
-  return results.filter((r) => r.vin && r.vin.length === 17);
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+    Accept: "application/json",
+  };
+
+  // Search for used Tesla Model X 2023-2026 in category 6001 (Cars & Trucks)
+  const searchItems: EbaySearchItem[] = [];
+  let offset = 0;
+  const limit = 200;
+  const maxPages = 10;
+
+  for (let pg = 0; pg < maxPages; pg++) {
+    const params = new URLSearchParams({
+      q: "Tesla Model X",
+      category_ids: "6001",
+      filter: "conditions:{USED},buyingOptions:{FIXED_PRICE|AUCTION}",
+      aspect_filter: "categoryId:6001,Year:{2023|2024|2025|2026}",
+      sort: "price",
+      limit: String(limit),
+      offset: String(offset),
+    });
+
+    const url = `${SEARCH_URL}?${params}`;
+    const res = await fetch(url, { headers });
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[eBay] Search API error ${res.status}: ${text}`);
+      break;
+    }
+
+    const data = (await res.json()) as EbaySearchResponse;
+
+    if (!data.itemSummaries || data.itemSummaries.length === 0) {
+      break;
+    }
+
+    searchItems.push(...data.itemSummaries);
+    console.log(
+      `[eBay] Search page ${pg + 1}: ${data.itemSummaries.length} items (total: ${searchItems.length}/${data.total})`
+    );
+
+    if (!data.next || searchItems.length >= data.total) break;
+    offset += limit;
+    await delay(200);
+  }
+
+  if (searchItems.length === 0) {
+    console.log("[eBay] 0 search results");
+    return [];
+  }
+
+  // Fetch item details for VIN, colors, mileage (batch with concurrency limit)
+  console.log(`[eBay] Fetching details for ${searchItems.length} items...`);
+  const results: RawListing[] = [];
+  const batchSize = 10;
+
+  for (let i = 0; i < searchItems.length; i += batchSize) {
+    const batch = searchItems.slice(i, i + batchSize);
+
+    const details = await Promise.all(
+      batch.map(async (item) => {
+        try {
+          const res = await fetch(`${ITEM_URL}/${item.itemId}`, { headers });
+          if (!res.ok) return { item, aspects: [] as EbayAspect[] };
+          const detail = (await res.json()) as EbayItemDetail;
+          return { item, aspects: detail.localizedAspects ?? [] };
+        } catch {
+          return { item, aspects: [] as EbayAspect[] };
+        }
+      })
+    );
+
+    for (const { item, aspects } of details) {
+      const vin = getAspect(aspects, "VIN").toUpperCase();
+      if (!vin || vin.length !== 17) continue;
+
+      const mileageStr = getAspect(aspects, "Mileage");
+      const mileage = parseInt(mileageStr.replace(/[^0-9]/g, ""), 10) || 0;
+
+      const year =
+        parseInt(getAspect(aspects, "Year"), 10) ||
+        parseInt(item.title.match(/\b(20\d{2})\b/)?.[1] ?? "", 10) ||
+        0;
+
+      const loc = item.itemLocation;
+      const dealerLocation =
+        loc?.city && loc?.stateOrProvince
+          ? `${loc.city}, ${loc.stateOrProvince}`
+          : loc?.city || "";
+
+      results.push({
+        vin,
+        source: "ebay",
+        url: item.itemWebUrl ?? "",
+        price: Math.round(parseFloat(item.price?.value ?? "0")) || 0,
+        mileage,
+        year,
+        trim: getAspect(aspects, "Trim"),
+        exteriorColor: getAspect(aspects, "Exterior Color"),
+        interiorColor: getAspect(aspects, "Interior Color"),
+        seatCount: null,
+        dealerName: item.seller?.username ?? "",
+        dealerLocation,
+        imageUrl: item.image?.imageUrl ?? null,
+        listedDate: item.itemCreationDate ?? null,
+      });
+    }
+
+    const progress = Math.min(i + batchSize, searchItems.length);
+    if (progress % 50 === 0 || progress === searchItems.length) {
+      console.log(
+        `[eBay] Details: ${progress}/${searchItems.length} fetched, ${results.length} with VINs`
+      );
+    }
+
+    if (i + batchSize < searchItems.length) {
+      await delay(100);
+    }
+  }
+
+  console.log(`[eBay] Done — ${results.length} listings with VINs`);
+  return results;
 }
