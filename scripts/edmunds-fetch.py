@@ -83,10 +83,12 @@ async def main():
     print("[Edmunds] Launching undetected Chrome...", file=sys.stderr)
     browser = await uc.start(headless=False)
 
+    # Filter year=2023-2026: HW4 started late 2023, everything older is filtered
+    # out by the HW4 check anyway. Reduces pages from ~64 to ~11.
     base_url = (
         "https://www.edmunds.com/inventory/srp.html"
         "?inventorytype=used&make=tesla&model=tesla|model-x"
-        "&radius=6000&sort=price%3Aasc"
+        "&radius=6000&sort=price%3Aasc&year=2023-2026"
     )
 
     all_items = []

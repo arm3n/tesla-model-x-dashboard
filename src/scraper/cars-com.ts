@@ -102,8 +102,8 @@ export async function scrapeCarsCom(): Promise<RawListing[]> {
   for (let pg = 1; pg <= maxPages; pg++) {
     const url =
       pg === 1
-        ? "https://www.cars.com/shopping/results/?stock_type=used&makes[]=tesla&models[]=tesla-model_x&maximum_distance=all&page_size=100"
-        : `https://www.cars.com/shopping/results/?stock_type=used&makes[]=tesla&models[]=tesla-model_x&maximum_distance=all&page_size=100&page=${pg}`;
+        ? "https://www.cars.com/shopping/results/?stock_type=used&makes[]=tesla&models[]=tesla-model_x&maximum_distance=all&page_size=100&year_min=2023&year_max=2026"
+        : `https://www.cars.com/shopping/results/?stock_type=used&makes[]=tesla&models[]=tesla-model_x&maximum_distance=all&page_size=100&year_min=2023&year_max=2026&page=${pg}`;
 
     try {
       const res = await fetch(url, { headers: FETCH_HEADERS });

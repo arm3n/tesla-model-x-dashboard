@@ -42,7 +42,7 @@ export async function scrapeCarfax(): Promise<RawListing[]> {
       }
     });
 
-    await page.goto("https://www.carfax.com/Used-Tesla-Model-X_w514", {
+    await page.goto("https://www.carfax.com/Used-2023-2026-Tesla-Model-X_w514", {
       waitUntil: "domcontentloaded",
       timeout: 45_000,
     });

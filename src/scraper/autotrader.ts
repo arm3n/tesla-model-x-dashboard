@@ -77,6 +77,8 @@ async function fetchAutotraderPage(
       makeCode: "TESLA",
       modelCode: "TESMODX",
       listingType: "USED",
+      startYear: "2023",
+      endYear: "2026",
       searchRadius: "0",
       zip: "10001",
       numRecords: String(pageSize),
@@ -280,7 +282,7 @@ async function scrapeAutotraderPlaywright(): Promise<RawListing[]> {
     });
 
     await page.goto(
-      "https://www.autotrader.com/cars-for-sale/used-cars/tesla/model-x?searchRadius=0&zip=10001&numRecords=100",
+      "https://www.autotrader.com/cars-for-sale/used-cars/tesla/model-x?startYear=2023&endYear=2026&searchRadius=0&zip=10001&numRecords=100",
       { waitUntil: "networkidle", timeout: 30_000 }
     );
 
