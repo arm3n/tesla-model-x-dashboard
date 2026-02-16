@@ -126,11 +126,16 @@ const server = Bun.serve({
 
       let sources: string[] | undefined;
       try {
-        const body = await req.json() as { sources?: string[] };
-        if (Array.isArray(body.sources) && body.sources.length > 0) {
-          sources = body.sources;
+        const text = await req.text();
+        if (text) {
+          const body = JSON.parse(text) as { sources?: string[] };
+          if (Array.isArray(body.sources) && body.sources.length > 0) {
+            sources = body.sources;
+          }
         }
-      } catch { /* no body or invalid JSON — run all */ }
+      } catch (err) {
+        console.error("[refresh] Failed to parse request body:", err);
+      }
 
       refreshInProgress = true;
       refreshLog = [];
