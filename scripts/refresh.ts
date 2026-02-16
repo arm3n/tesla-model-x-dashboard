@@ -10,7 +10,6 @@ import { scrapeCarfax } from "../src/scraper/carfax.ts";
 import { normalize, filterListings } from "../src/normalize.ts";
 import {
   upsertListings,
-  markInactive,
   getExistingListingsMap,
 } from "../src/db.ts";
 import type { RawListing } from "../src/scraper/types.ts";
@@ -139,8 +138,8 @@ export async function refresh(
   log("Saving to database...");
   upsertListings(normalized);
 
-  const activeVins = new Set(normalized.map((l) => l.vin));
-  markInactive(activeVins);
+  // Never deactivate listings — all results persist locally regardless of
+  // whether they appear in subsequent refreshes.
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   log(`Refresh complete in ${elapsed}s`);
