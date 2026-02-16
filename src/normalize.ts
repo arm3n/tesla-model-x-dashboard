@@ -90,8 +90,12 @@ export async function normalize(
   const listings: Listing[] = [];
 
   for (const [vin, raws] of byVin) {
-    // Score each raw listing by completeness, then source priority as tiebreaker
+    // Score each raw listing by completeness, then source priority as tiebreaker.
+    // Tesla CPO always wins — user wants the direct Tesla link when available.
     const sorted = raws.sort((a, b) => {
+      // Tesla always wins dedup (CPO listing is most valuable)
+      if (a.source === "tesla" && b.source !== "tesla") return -1;
+      if (b.source === "tesla" && a.source !== "tesla") return 1;
       const aVerified = urlStatus.get(a.url) ?? true; // single-source VINs default to true
       const bVerified = urlStatus.get(b.url) ?? true;
       const aScore = computeCompleteness(a, aVerified);
@@ -121,9 +125,12 @@ export async function normalize(
       }
     }
 
-    // Try option codes for interior color enrichment
+    // Try option codes for color enrichment
     if (primary.optionCodes?.length) {
       const decoded = decodeOptionCodes(primary.optionCodes);
+      if (!exteriorColor && decoded.exteriorColor) {
+        exteriorColor = decoded.exteriorColor;
+      }
       if (!interiorColor && decoded.interiorColor) {
         interiorColor = decoded.interiorColor;
       }

@@ -3,6 +3,29 @@
  * Reference: https://tesla-api.timdorr.com/vehicle/optioncodes
  */
 
+// Exterior paint codes (from Tesla compositor URLs)
+const EXTERIOR_COLORS: Record<string, string> = {
+  PPSW: "Pearl White Multi-Coat",
+  PBSB: "Solid Black",
+  PMNG: "Midnight Silver Metallic",
+  PPMR: "Red Multi-Coat",
+  PPSB: "Deep Blue Metallic",
+  PPSR: "Signature Red",
+  PMBL: "Obsidian Black Metallic",
+  PMSS: "Silver Metallic",
+  PPTI: "Titanium Metallic",
+  PMMB: "Midnight Cherry Red",
+  PPCP: "Quicksilver",
+  PR01: "Ultra Red",
+  PR00: "Red",
+  PB00: "Solid Black",
+  PB01: "Solid Black",
+  PN00: "Midnight Silver Metallic",
+  PN01: "Midnight Silver Metallic",
+  PW00: "Pearl White Multi-Coat",
+  PW01: "Pearl White Multi-Coat",
+};
+
 // Interior color codes
 const INTERIOR_COLORS: Record<string, string> = {
   IBB0: "Black",
@@ -19,6 +42,18 @@ const INTERIOR_COLORS: Record<string, string> = {
   IPW1: "White",
   IN3PB: "Black",
   IN3PW: "White",
+  // Compositor URL interior codes (INXXX format)
+  INBC3P: "Black",
+  INB3P: "Black",
+  INBC3W: "Black and White",
+  INB3W: "Black and White",
+  INBCW: "Black and White",
+  INBFB: "Cream",
+  INFBB: "Cream",
+  INBBW: "Black and White",
+  INWW: "White",
+  INPB0: "Black",
+  INPW0: "White",
 };
 
 // Seat configuration codes
@@ -57,6 +92,7 @@ const AP_CODES: Record<string, string> = {
 };
 
 export interface DecodedOptions {
+  exteriorColor: string | null;
   interiorColor: string | null;
   seatCount: number | null;
   hasHw4: boolean | null;
@@ -64,6 +100,7 @@ export interface DecodedOptions {
 }
 
 export function decodeOptionCodes(codes: string[]): DecodedOptions {
+  let exteriorColor: string | null = null;
   let interiorColor: string | null = null;
   let seatCount: number | null = null;
   let hasHw4: boolean | null = null;
@@ -71,6 +108,10 @@ export function decodeOptionCodes(codes: string[]): DecodedOptions {
 
   for (const code of codes) {
     const c = code.trim().replace(/^\$/, "");
+
+    if (EXTERIOR_COLORS[c]) {
+      exteriorColor = EXTERIOR_COLORS[c];
+    }
 
     if (INTERIOR_COLORS[c]) {
       interiorColor = INTERIOR_COLORS[c];
@@ -91,5 +132,5 @@ export function decodeOptionCodes(codes: string[]): DecodedOptions {
     }
   }
 
-  return { interiorColor, seatCount, hasHw4, autopilot };
+  return { exteriorColor, interiorColor, seatCount, hasHw4, autopilot };
 }
