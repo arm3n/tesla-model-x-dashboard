@@ -51,13 +51,14 @@ function detectSeatCount(raw: RawListing): number | null {
 const SOURCE_PRIORITY: Record<Source, number> = {
   tesla: 0,
   marketcheck: 1,
-  autotrader: 2,
-  "cars.com": 3,
-  truecar: 4,
-  edmunds: 5,
-  carfax: 6,
-  ebay: 7,
-  cargurus: 8,
+  "auto.dev": 2,
+  autotrader: 3,
+  "cars.com": 4,
+  truecar: 5,
+  edmunds: 6,
+  carfax: 7,
+  ebay: 8,
+  cargurus: 9,
 };
 
 const SALVAGE_PATTERNS = /\b(salvage|rebuilt|flood|lemon|junk|parts only|certificate of destruction|non-repairable)\b/i;

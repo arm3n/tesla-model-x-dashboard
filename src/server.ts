@@ -1,5 +1,5 @@
 import { resolve } from "path";
-import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, favoriteVin, unfavoriteVin, getFavorites } from "./db.ts";
+import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs } from "./db.ts";
 import { refresh } from "../scripts/refresh.ts";
 
 const PUBLIC_DIR = resolve(import.meta.dir, "../public");
@@ -105,7 +105,7 @@ const server = Bun.serve({
 
     // Source stats — always returns all 9 sources even if 0
     if (url.pathname === "/api/sources") {
-      const ALL_SOURCES = ["marketcheck", "cars.com", "cargurus", "tesla", "truecar", "autotrader", "ebay", "edmunds", "carfax"];
+      const ALL_SOURCES = ["marketcheck", "auto.dev", "cars.com", "cargurus", "tesla", "truecar", "autotrader", "ebay", "edmunds", "carfax"];
       const all = getAllListings();
       const filtered = getFilteredListings();
       const allBySrc: Record<string, number> = {};
@@ -114,6 +114,11 @@ const server = Bun.serve({
       for (const l of all) allBySrc[l.source] = (allBySrc[l.source] || 0) + 1;
       for (const l of filtered) filtBySrc[l.source] = (filtBySrc[l.source] || 0) + 1;
       return Response.json({ total: all.length, filtered: filtered.length, allBySrc, filtBySrc, sources: ALL_SOURCES });
+    }
+
+    if (url.pathname === "/api/scraper-logs") {
+      const limit = parseInt(url.searchParams.get("limit") ?? "100", 10);
+      return Response.json({ logs: getScraperLogs(limit) });
     }
 
     if (url.pathname === "/api/refresh" && req.method === "POST") {

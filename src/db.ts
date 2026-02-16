@@ -80,6 +80,25 @@ export function getDb(): Database {
     )
   `);
 
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS scraper_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      refreshId TEXT NOT NULL,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL,
+      rawCount INTEGER NOT NULL DEFAULT 0,
+      dedupedCount INTEGER NOT NULL DEFAULT 0,
+      filteredCount INTEGER NOT NULL DEFAULT 0,
+      errorMessage TEXT,
+      durationMs INTEGER NOT NULL DEFAULT 0,
+      timestamp TEXT NOT NULL
+    )
+  `);
+
+  _db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_scraper_logs_ts ON scraper_logs(timestamp)
+  `);
+
   return _db;
 }
 
@@ -345,4 +364,46 @@ export function getFavorites(): { vin: string; note: string; favoritedAt: string
 export function isFavorite(vin: string): boolean {
   const db = getDb();
   return !!db.prepare("SELECT 1 FROM favorites WHERE vin = $vin").get({ $vin: vin });
+}
+
+// --- Scraper Logs ---
+
+export interface ScraperLogEntry {
+  refreshId: string;
+  source: string;
+  status: "success" | "error" | "skipped";
+  rawCount: number;
+  dedupedCount: number;
+  filteredCount: number;
+  errorMessage: string | null;
+  durationMs: number;
+  timestamp: string;
+}
+
+export function insertScraperLog(entry: ScraperLogEntry): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO scraper_logs (refreshId, source, status, rawCount, dedupedCount, filteredCount, errorMessage, durationMs, timestamp)
+    VALUES ($refreshId, $source, $status, $rawCount, $dedupedCount, $filteredCount, $errorMessage, $durationMs, $timestamp)
+  `).run({
+    $refreshId: entry.refreshId,
+    $source: entry.source,
+    $status: entry.status,
+    $rawCount: entry.rawCount,
+    $dedupedCount: entry.dedupedCount,
+    $filteredCount: entry.filteredCount,
+    $errorMessage: entry.errorMessage,
+    $durationMs: entry.durationMs,
+    $timestamp: entry.timestamp,
+  });
+}
+
+export function getScraperLogs(limit: number = 50): ScraperLogEntry[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT refreshId, source, status, rawCount, dedupedCount, filteredCount, errorMessage, durationMs, timestamp
+    FROM scraper_logs
+    ORDER BY timestamp DESC, id DESC
+    LIMIT $limit
+  `).all({ $limit: limit }) as ScraperLogEntry[];
 }

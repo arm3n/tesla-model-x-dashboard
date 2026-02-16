@@ -1,7 +1,7 @@
 import type { RawListing } from "./types.ts";
 
 const API_BASE = "https://mc-api.marketcheck.com/v2";
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 100;
 
 interface MarketCheckListing {
   vin: string;
@@ -58,6 +58,7 @@ export async function scrapeMarketCheck(): Promise<RawListing[]> {
       make: "Tesla",
       model: "Model X",
       car_type: "used",
+      year_range: "2023-2026",
       rows: String(PAGE_SIZE),
       start: String(start),
     });

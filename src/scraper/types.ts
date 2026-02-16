@@ -1,5 +1,6 @@
 export type Source =
   | "marketcheck"
+  | "auto.dev"
   | "cars.com"
   | "cargurus"
   | "tesla"

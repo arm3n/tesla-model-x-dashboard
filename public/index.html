@@ -240,6 +240,62 @@
     }
     .btn-restore:hover { background: #3fb950; color: #fff; }
 
+    .logs-panel {
+      display: none;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 12px 24px;
+      max-height: 380px;
+      overflow-y: auto;
+    }
+    .logs-panel.active { display: block; }
+
+    .log-group {
+      margin-bottom: 14px;
+      border: 1px solid #21262d;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .log-group-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: #0d1117;
+      font-size: 12px;
+      color: #8b949e;
+      cursor: pointer;
+    }
+    .log-group-header:hover { background: #1c2128; }
+    .log-group-header .log-time { color: #58a6ff; font-weight: 600; }
+    .log-group-header .log-summary { color: #c9d1d9; }
+    .log-group-body { display: none; }
+    .log-group.open .log-group-body { display: block; }
+
+    .log-row {
+      display: grid;
+      grid-template-columns: 120px 80px 80px 80px 80px 80px 1fr;
+      gap: 8px;
+      padding: 5px 12px;
+      font-size: 11px;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      border-top: 1px solid #21262d;
+      align-items: center;
+    }
+    .log-row.header-row {
+      color: #484f58;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.5px;
+    }
+    .log-row .log-ok { color: #3fb950; }
+    .log-row .log-err { color: #f85149; }
+    .log-row .log-zero { color: #484f58; }
+    .log-row .log-num { color: #c9d1d9; text-align: right; }
+    .log-row .log-dur { color: #8b949e; text-align: right; }
+    .log-row .log-error-msg { color: #f85149; font-size: 10px; word-break: break-all; }
+
     .excluded-panel {
       display: none;
       background: #161b22;
@@ -370,6 +426,7 @@
       <label class="toggle-label">
         <input type="checkbox" id="showAll"> Show all listings (unfiltered)
       </label>
+      <button class="btn" id="logsBtn" onclick="toggleLogsPanel()">Scraper Logs</button>
       <button class="btn" id="excludedBtn" onclick="toggleExcludedPanel()">Excluded (<span id="excludedCount">0</span>)</button>
       <button class="btn btn-primary" id="refreshBtn" onclick="doRefresh()">Refresh Now</button>
       <span id="lastUpdate" class="toggle-label"></span>
@@ -390,6 +447,13 @@
       <span id="progressTitle">Refreshing data...</span>
     </div>
     <div class="progress-log" id="progressLog"></div>
+  </div>
+  <div class="logs-panel" id="logsPanel">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+      <h3 style="font-size:14px;font-weight:600;color:#f0f6fc;">Scraper Logs</h3>
+      <button class="btn" style="font-size:11px;padding:3px 8px;" onclick="loadScraperLogs()">Reload</button>
+    </div>
+    <div id="logsContent" style="font-size:12px;color:#8b949e;">Loading...</div>
   </div>
   <div class="excluded-panel" id="excludedPanel">
     <h3>Manually Excluded Listings</h3>
@@ -738,7 +802,7 @@
       }
     }
 
-    const ALL_SOURCES = ["marketcheck", "autotrader", "tesla", "truecar", "edmunds", "carfax", "ebay", "cars.com", "cargurus"];
+    const ALL_SOURCES = ["marketcheck", "auto.dev", "autotrader", "tesla", "truecar", "edmunds", "carfax", "ebay", "cars.com", "cargurus"];
     let lastSourceCounts = {};
 
     function doRefresh() {
@@ -982,6 +1046,94 @@
     document.getElementById('excludeReason').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') confirmExclude();
     });
+
+    // --- Scraper Logs ---
+
+    function toggleLogsPanel() {
+      const panel = document.getElementById('logsPanel');
+      panel.classList.toggle('active');
+      if (panel.classList.contains('active')) {
+        loadScraperLogs();
+      }
+    }
+
+    async function loadScraperLogs() {
+      const container = document.getElementById('logsContent');
+      try {
+        const res = await fetch('/api/scraper-logs?limit=100');
+        const data = await res.json();
+        const logs = data.logs;
+
+        if (!logs || logs.length === 0) {
+          container.innerHTML = '<div style="color:#484f58;padding:8px 0">No scraper logs yet. Run a refresh to generate logs.</div>';
+          return;
+        }
+
+        // Group logs by refreshId
+        const groups = new Map();
+        for (const log of logs) {
+          if (!groups.has(log.refreshId)) groups.set(log.refreshId, []);
+          groups.get(log.refreshId).push(log);
+        }
+
+        let html = '';
+        let idx = 0;
+        for (const [refreshId, entries] of groups) {
+          const ts = new Date(entries[0].timestamp);
+          const timeStr = ts.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+            + ' ' + ts.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+
+          const totalRaw = entries.reduce((s, e) => s + e.rawCount, 0);
+          const totalDedup = entries.reduce((s, e) => s + e.dedupedCount, 0);
+          const totalFiltered = entries.reduce((s, e) => s + e.filteredCount, 0);
+          const errors = entries.filter(e => e.status === 'error').length;
+          const totalDur = Math.max(...entries.map(e => e.durationMs));
+
+          const errorBadge = errors > 0 ? ` <span style="color:#f85149">${errors} error${errors > 1 ? 's' : ''}</span>` : '';
+          const openClass = idx === 0 ? ' open' : '';
+
+          html += `<div class="log-group${openClass}" onclick="this.classList.toggle('open')">
+            <div class="log-group-header">
+              <span class="log-time">${timeStr}</span>
+              <span class="log-summary">${entries.length} sources | ${totalRaw} raw | ${totalDedup} deduped | ${totalFiltered} filtered | ${(totalDur / 1000).toFixed(1)}s${errorBadge}</span>
+            </div>
+            <div class="log-group-body" onclick="event.stopPropagation()">
+              <div class="log-row header-row">
+                <span>Source</span><span>Status</span><span style="text-align:right">Raw</span><span style="text-align:right">Deduped</span><span style="text-align:right">Filtered</span><span style="text-align:right">Time</span><span>Error</span>
+              </div>`;
+
+          for (const e of entries) {
+            const statusCls = e.status === 'success' ? (e.rawCount > 0 ? 'log-ok' : 'log-zero') : 'log-err';
+            const statusLabel = e.status === 'success' ? (e.rawCount > 0 ? 'OK' : 'OK (0)') : 'ERROR';
+            const durStr = (e.durationMs / 1000).toFixed(1) + 's';
+            const errStr = e.errorMessage ? `<span class="log-error-msg">${escHtml(e.errorMessage.slice(0, 200))}</span>` : '';
+
+            html += `<div class="log-row">
+              <span>${escHtml(e.source)}</span>
+              <span class="${statusCls}">${statusLabel}</span>
+              <span class="log-num">${e.rawCount}</span>
+              <span class="log-num">${e.dedupedCount}</span>
+              <span class="log-num">${e.filteredCount}</span>
+              <span class="log-dur">${durStr}</span>
+              <span>${errStr}</span>
+            </div>`;
+          }
+
+          html += '</div></div>';
+          idx++;
+        }
+
+        container.innerHTML = html;
+      } catch (err) {
+        container.innerHTML = `<div style="color:#f85149">Failed to load logs: ${err.message}</div>`;
+      }
+    }
+
+    function escHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
 
     // Initial load
     loadListings();

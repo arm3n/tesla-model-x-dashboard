@@ -7,10 +7,12 @@ import { scrapeAutotrader } from "../src/scraper/autotrader.ts";
 import { scrapeEbayMotors } from "../src/scraper/ebay-motors.ts";
 import { scrapeEdmunds } from "../src/scraper/edmunds.ts";
 import { scrapeCarfax } from "../src/scraper/carfax.ts";
+import { scrapeAutoDev } from "../src/scraper/auto-dev.ts";
 import { normalize, filterListings } from "../src/normalize.ts";
 import {
   upsertListings,
   getExistingListingsMap,
+  insertScraperLog,
 } from "../src/db.ts";
 import type { RawListing } from "../src/scraper/types.ts";
 
@@ -18,6 +20,7 @@ export type ProgressCallback = (msg: string) => void;
 
 export interface RefreshStats {
   marketcheck: number;
+  autoDev: number;
   tesla: number;
   autotrader: number;
   truecar: number;
@@ -39,6 +42,7 @@ interface ScraperDef {
 const SCRAPERS: ScraperDef[] = [
   { name: "Tesla Inventory", key: "tesla", fn: scrapeTesla },
   { name: "MarketCheck", key: "marketcheck", fn: scrapeMarketCheck },
+  { name: "Auto.dev", key: "autoDev", fn: scrapeAutoDev },
   { name: "Autotrader", key: "autotrader", fn: scrapeAutotrader },
   { name: "TrueCar", key: "truecar", fn: scrapeTrueCar },
   { name: "Edmunds", key: "edmunds", fn: scrapeEdmunds },
@@ -51,6 +55,8 @@ const SCRAPERS: ScraperDef[] = [
 /** Map from source key/name to the scraper key used in SCRAPERS */
 const SOURCE_KEY_MAP: Record<string, string> = {
   marketcheck: "marketcheck",
+  "auto.dev": "autoDev",
+  autodev: "autoDev",
   "cars.com": "carsCom",
   carscom: "carsCom",
   cargurus: "carGurus",
@@ -84,14 +90,20 @@ export async function refresh(
     log(`Running ${activescrapers.length} of ${SCRAPERS.length} scrapers: ${activescrapers.map(s => s.name).join(", ")}`);
   }
 
+  const refreshId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
   for (const s of activescrapers) {
     log(`Fetching from ${s.name}...`);
   }
 
+  // Run scrapers with per-source timing
+  const scraperTimings: { scraper: ScraperDef; startMs: number }[] =
+    activescrapers.map((s) => ({ scraper: s, startMs: Date.now() }));
+
   const results = await Promise.allSettled(
-    activescrapers.map((s) =>
-      s.fn().then((r) => {
-        log(`${s.name}: ${r.length} listings found`);
+    scraperTimings.map(({ scraper }) =>
+      scraper.fn().then((r) => {
+        log(`${scraper.name}: ${r.length} listings found`);
         return r;
       })
     )
@@ -99,6 +111,7 @@ export async function refresh(
 
   const stats: RefreshStats = {
     marketcheck: 0,
+    autoDev: 0,
     tesla: 0,
     autotrader: 0,
     truecar: 0,
@@ -112,15 +125,22 @@ export async function refresh(
   };
 
   const allRaw: RawListing[] = [];
+  const rawByScraper: { scraper: ScraperDef; raw: RawListing[]; durationMs: number; error?: string }[] = [];
 
-  for (let i = 0; i < activescrapers.length; i++) {
+  const now = Date.now();
+  for (let i = 0; i < scraperTimings.length; i++) {
     const result = results[i]!;
-    const scraper = activescrapers[i]!;
+    const { scraper, startMs } = scraperTimings[i]!;
+    const durationMs = now - startMs;
+
     if (result.status === "fulfilled") {
       stats[scraper.key] = result.value.length;
       allRaw.push(...result.value);
+      rawByScraper.push({ scraper, raw: result.value, durationMs });
     } else {
-      log(`${scraper.name} failed: ${String(result.reason).slice(0, 100)}`);
+      const errMsg = String(result.reason).slice(0, 500);
+      log(`${scraper.name} failed: ${errMsg.slice(0, 100)}`);
+      rawByScraper.push({ scraper, raw: [], durationMs, error: errMsg });
     }
   }
 
@@ -138,8 +158,34 @@ export async function refresh(
   log("Saving to database...");
   upsertListings(normalized);
 
-  // Never deactivate listings — all results persist locally regardless of
-  // whether they appear in subsequent refreshes.
+  // Build per-source dedup/filter counts from normalized results
+  const SOURCE_NAME_MAP: Record<string, string> = {
+    tesla: "tesla", marketcheck: "marketcheck", autoDev: "auto.dev",
+    autotrader: "autotrader", truecar: "truecar", edmunds: "edmunds",
+    carfax: "carfax", ebay: "ebay", carsCom: "cars.com", carGurus: "cargurus",
+  };
+
+  const dedupBySource: Record<string, number> = {};
+  const filtBySource: Record<string, number> = {};
+  for (const l of normalized) dedupBySource[l.source] = (dedupBySource[l.source] || 0) + 1;
+  for (const l of filtered) filtBySource[l.source] = (filtBySource[l.source] || 0) + 1;
+
+  // Write scraper logs
+  const ts = new Date().toISOString();
+  for (const entry of rawByScraper) {
+    const sourceName = SOURCE_NAME_MAP[entry.scraper.key] || entry.scraper.key;
+    insertScraperLog({
+      refreshId,
+      source: entry.scraper.name,
+      status: entry.error ? "error" : "success",
+      rawCount: entry.raw.length,
+      dedupedCount: dedupBySource[sourceName] || 0,
+      filteredCount: filtBySource[sourceName] || 0,
+      errorMessage: entry.error || null,
+      durationMs: entry.durationMs,
+      timestamp: ts,
+    });
+  }
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   log(`Refresh complete in ${elapsed}s`);
