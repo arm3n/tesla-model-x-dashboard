@@ -18,11 +18,6 @@ async function run() {
   let results: any[];
 
   switch (scraperName) {
-    case "carfax": {
-      const { scrapeCarfax } = await import("../src/scraper/carfax.ts");
-      results = await scrapeCarfax();
-      break;
-    }
     case "ebay": {
       const { scrapeEbayMotors } = await import("../src/scraper/ebay-motors.ts");
       results = await scrapeEbayMotors();
@@ -37,6 +32,11 @@ async function run() {
     case "cargurus": {
       const { scrapeCarGurus } = await import("../src/scraper/cargurus.ts");
       results = await scrapeCarGurus();
+      break;
+    }
+    case "truecar": {
+      const { scrapeTrueCar } = await import("../src/scraper/truecar.ts");
+      results = await scrapeTrueCar();
       break;
     }
     default:
