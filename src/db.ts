@@ -105,6 +105,38 @@ export function getDb(): Database {
 export function upsertListings(listings: Listing[]): void {
   const db = getDb();
 
+  // Source priority: lower = preferred. When a VIN already exists from a
+  // higher-priority source, keep that source's core data (source, url,
+  // price, dealer, etc.) and only update metadata (lastSeen, fill blanks).
+  const SOURCE_PRIORITY_SQL = `
+    CASE listings.source
+      WHEN 'tesla' THEN 0
+      WHEN 'marketcheck' THEN 1
+      WHEN 'auto.dev' THEN 2
+      WHEN 'autotrader' THEN 3
+      WHEN 'cars.com' THEN 4
+      WHEN 'truecar' THEN 5
+      WHEN 'edmunds' THEN 6
+      WHEN 'carfax' THEN 7
+      WHEN 'ebay' THEN 8
+      WHEN 'cargurus' THEN 9
+      ELSE 99
+    END`;
+  const NEW_PRIORITY_SQL = `
+    CASE $source
+      WHEN 'tesla' THEN 0
+      WHEN 'marketcheck' THEN 1
+      WHEN 'auto.dev' THEN 2
+      WHEN 'autotrader' THEN 3
+      WHEN 'cars.com' THEN 4
+      WHEN 'truecar' THEN 5
+      WHEN 'edmunds' THEN 6
+      WHEN 'carfax' THEN 7
+      WHEN 'ebay' THEN 8
+      WHEN 'cargurus' THEN 9
+      ELSE 99
+    END`;
+
   const upsert = db.prepare(`
     INSERT INTO listings (
       vin, source, url, price, mileage, year, trim,
@@ -118,22 +150,32 @@ export function upsertListings(listings: Listing[]): void {
       $firstSeen, $lastSeen, $isActive, $titleStatus, $accidentHistory
     )
     ON CONFLICT(vin) DO UPDATE SET
-      source = $source,
-      url = $url,
-      price = $price,
-      mileage = $mileage,
-      year = $year,
-      trim = $trim,
-      exteriorColor = $exteriorColor,
-      interiorColor = $interiorColor,
-      seatCount = COALESCE($seatCount, listings.seatCount),
+      source = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $source ELSE listings.source END,
+      url = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $url ELSE listings.url END,
+      price = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $price ELSE listings.price END,
+      mileage = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $mileage ELSE listings.mileage END,
+      year = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $year ELSE listings.year END,
+      trim = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $trim ELSE listings.trim END,
+      exteriorColor = CASE
+        WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $exteriorColor
+        WHEN listings.exteriorColor = '' THEN $exteriorColor
+        ELSE listings.exteriorColor END,
+      interiorColor = CASE
+        WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $interiorColor
+        WHEN listings.interiorColor = '' THEN $interiorColor
+        ELSE listings.interiorColor END,
+      seatCount = COALESCE(
+        CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $seatCount ELSE listings.seatCount END,
+        $seatCount, listings.seatCount),
       hw4Status = CASE
         WHEN vin IN (SELECT vin FROM hw4_overrides) THEN listings.hw4Status
         ELSE $hw4Status
       END,
-      dealerName = $dealerName,
-      dealerLocation = $dealerLocation,
-      imageUrl = COALESCE($imageUrl, listings.imageUrl),
+      dealerName = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $dealerName ELSE listings.dealerName END,
+      dealerLocation = CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $dealerLocation ELSE listings.dealerLocation END,
+      imageUrl = COALESCE(
+        CASE WHEN ${NEW_PRIORITY_SQL} <= ${SOURCE_PRIORITY_SQL} THEN $imageUrl ELSE listings.imageUrl END,
+        $imageUrl, listings.imageUrl),
       listedDate = COALESCE($listedDate, listings.listedDate),
       lastSeen = $lastSeen,
       isActive = $isActive,

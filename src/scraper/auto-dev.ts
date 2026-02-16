@@ -39,6 +39,50 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Dealer backend / feed domains that aren't consumer-accessible */
+const NON_CONSUMER_DOMAINS = [
+  "vast.com",
+  "homenetinc.com",
+  "dealercenter.com",
+  "vautofeed.com",
+  "carstory.com",
+  "forddirect.com",
+  "autoboing.com",
+  "shiftdigital.com",
+];
+
+function isConsumerUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return !NON_CONSUMER_DOMAINS.some((d) => host.endsWith(d));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve vast.com tracking URLs to their final dealer destination.
+ * These URLs require a Referer header from auto.dev to return a 302
+ * redirect to the real dealer page; without it they 403.
+ */
+async function resolveVastUrl(vastUrl: string): Promise<string | null> {
+  try {
+    // Follow up to 3 redirects manually (http→https→dealer)
+    let url = vastUrl;
+    for (let hop = 0; hop < 3; hop++) {
+      const res = await fetch(url, {
+        headers: { Referer: "https://auto.dev/" },
+        redirect: "manual",
+      });
+      const location = res.headers.get("location");
+      if (!location) break;
+      if (isConsumerUrl(location)) return location;
+      url = location;
+    }
+  } catch { /* resolve failed, skip */ }
+  return null;
+}
+
 export async function scrapeAutoDev(): Promise<RawListing[]> {
   const apiKey = process.env.AUTO_DEV_API_KEY;
   if (!apiKey) {
@@ -79,20 +123,48 @@ export async function scrapeAutoDev(): Promise<RawListing[]> {
       break;
     }
 
+    // Collect items and their vast.com URLs to resolve in batch
+    const pageItems: { item: AutoDevListing; vin: string }[] = [];
     for (const item of data.data) {
       const vin = (item.vin || item.vehicle?.vin || "").toUpperCase();
       if (!vin || vin.length !== 17) continue;
-
-      // Skip new cars if the API returns them
       if (item.retailListing && item.retailListing.used === false) continue;
+      pageItems.push({ item, vin });
+    }
 
+    // Resolve vast.com redirects in parallel (batches of 10)
+    const vastUrls = new Map<string, string>();
+    const vastItems = pageItems.filter(
+      (p) => p.item.retailListing?.vdp?.includes("vast.com")
+    );
+    for (let i = 0; i < vastItems.length; i += 10) {
+      const batch = vastItems.slice(i, i + 10);
+      const resolved = await Promise.all(
+        batch.map(async (p) => {
+          const real = await resolveVastUrl(p.item.retailListing!.vdp!);
+          return { vin: p.vin, url: real };
+        })
+      );
+      for (const r of resolved) {
+        if (r.url) vastUrls.set(r.vin, r.url);
+      }
+    }
+
+    for (const { item, vin } of pageItems) {
       const rl = item.retailListing;
       const v = item.vehicle;
+
+      let listingUrl = rl?.vdp || "";
+      if (vastUrls.has(vin)) {
+        listingUrl = vastUrls.get(vin)!;
+      } else if (!listingUrl || !isConsumerUrl(listingUrl)) {
+        listingUrl = `https://www.truecar.com/used-cars-for-sale/listing/${vin}/`;
+      }
 
       results.push({
         vin,
         source: "auto.dev",
-        url: rl?.vdp || `https://auto.dev/listings/${vin}`,
+        url: listingUrl,
         price: rl?.price ?? 0,
         mileage: rl?.miles ?? 0,
         year: v?.year ?? 0,
@@ -109,7 +181,7 @@ export async function scrapeAutoDev(): Promise<RawListing[]> {
     }
 
     console.log(
-      `[Auto.dev] Page ${page}: ${data.data.length} items (total: ${results.length})`
+      `[Auto.dev] Page ${page}: ${pageItems.length} items, ${vastUrls.size} URLs resolved (total: ${results.length})`
     );
 
     if (data.data.length < PAGE_LIMIT) {
