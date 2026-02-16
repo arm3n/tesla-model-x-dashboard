@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tesla Model X HW4 Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@35.1.0/dist/ag-grid-community.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f1117;
+      color: #e1e4e8;
+    }
+
+    .header {
+      padding: 16px 24px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      color: #f0f6fc;
+    }
+
+    .header h1 span {
+      color: #e3405f;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn {
+      padding: 6px 14px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      background: #21262d;
+      color: #c9d1d9;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+
+    .btn:hover { background: #30363d; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-primary {
+      background: #238636;
+      border-color: #2ea043;
+      color: #fff;
+    }
+
+    .btn-primary:hover { background: #2ea043; }
+
+    .toggle-label {
+      font-size: 13px;
+      color: #8b949e;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .stats-bar {
+      padding: 10px 24px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      display: flex;
+      gap: 24px;
+      font-size: 13px;
+      color: #8b949e;
+      flex-wrap: wrap;
+    }
+
+    .stat { display: flex; gap: 6px; }
+    .stat-value { color: #f0f6fc; font-weight: 600; }
+
+    .progress-panel {
+      display: none;
+      background: #0d1117;
+      border-bottom: 1px solid #30363d;
+      padding: 12px 24px;
+      max-height: 180px;
+      overflow: hidden;
+    }
+
+    .progress-panel.active {
+      display: block;
+    }
+
+    .progress-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #58a6ff;
+    }
+
+    .progress-log {
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      color: #8b949e;
+      max-height: 130px;
+      overflow-y: auto;
+    }
+
+    .progress-log .line {
+      padding: 1px 0;
+    }
+
+    .progress-log .line::before {
+      content: '>';
+      color: #30363d;
+      margin-right: 8px;
+    }
+
+    .progress-log .line.done {
+      color: #3fb950;
+    }
+
+    .progress-log .line.error {
+      color: #f85149;
+    }
+
+    .grid-container {
+      height: calc(100vh - 105px);
+      padding: 0;
+      transition: height 0.2s;
+    }
+
+    .grid-container.with-progress {
+      height: calc(100vh - 285px);
+    }
+
+    /* AG Grid dark theme overrides */
+    .ag-theme-alpine-dark {
+      --ag-background-color: #0d1117;
+      --ag-header-background-color: #161b22;
+      --ag-odd-row-background-color: #0d1117;
+      --ag-row-hover-color: #1c2128;
+      --ag-border-color: #30363d;
+      --ag-header-foreground-color: #8b949e;
+      --ag-foreground-color: #c9d1d9;
+      --ag-font-size: 13px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .badge-confirmed { background: #1a7f37; color: #aff5b4; }
+    .badge-likely { background: #9e6a03; color: #f8e3a1; }
+    .badge-uncertain { background: #bd561d; color: #ffdfb6; }
+    .badge-unknown { background: #30363d; color: #8b949e; }
+    .badge-ask-dealer { background: #1f3a5f; color: #79c0ff; }
+    .badge-clean { background: #1a7f37; color: #aff5b4; }
+    .badge-accident { background: #da3633; color: #ffd8d8; }
+    .badge-branded { background: #da3633; color: #ffd8d8; }
+    .badge-salvage { background: #8b0000; color: #ffd8d8; }
+
+    .source-chip {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      font-family: monospace;
+      margin-right: 4px;
+      background: #21262d;
+      color: #8b949e;
+    }
+    .source-chip .src-count { color: #f0f6fc; font-weight: 600; }
+    .source-chip.has-data { background: #1a3a1a; color: #3fb950; }
+    .source-chip.has-data .src-count { color: #aff5b4; }
+    .source-chip.zero { opacity: 0.5; }
+
+    .badge-clickable {
+      cursor: pointer;
+      transition: transform 0.1s, box-shadow 0.1s;
+    }
+    .badge-clickable:hover {
+      transform: scale(1.1);
+      box-shadow: 0 0 6px rgba(88, 166, 255, 0.4);
+    }
+
+    .star-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+      padding: 2px;
+      transition: transform 0.1s;
+    }
+    .star-btn:hover { transform: scale(1.2); }
+    .star-btn.active { filter: drop-shadow(0 0 3px rgba(255, 215, 0, 0.5)); }
+
+    .row-favorite {
+      background: #1a1d2e !important;
+    }
+
+    .btn-exclude {
+      padding: 3px 10px;
+      border: 1px solid #da3633;
+      border-radius: 4px;
+      background: transparent;
+      color: #da3633;
+      cursor: pointer;
+      font-size: 11px;
+      transition: all 0.15s;
+    }
+    .btn-exclude:hover { background: #da3633; color: #fff; }
+
+    .btn-restore {
+      padding: 2px 8px;
+      border: 1px solid #3fb950;
+      border-radius: 4px;
+      background: transparent;
+      color: #3fb950;
+      cursor: pointer;
+      font-size: 11px;
+      transition: all 0.15s;
+    }
+    .btn-restore:hover { background: #3fb950; color: #fff; }
+
+    .excluded-panel {
+      display: none;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 12px 24px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .excluded-panel.active { display: block; }
+    .excluded-panel h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #f0f6fc;
+      margin-bottom: 8px;
+    }
+    .excluded-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 4px 0;
+      font-size: 12px;
+      color: #8b949e;
+      border-bottom: 1px solid #21262d;
+    }
+    .excluded-item .vin { color: #c9d1d9; font-family: monospace; }
+    .excluded-item .reason { color: #8b949e; font-style: italic; }
+    .excluded-item .date { color: #484f58; }
+
+    .exclude-modal {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .exclude-modal.active { display: flex; }
+    .exclude-modal-content {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 20px;
+      width: 400px;
+      max-width: 90vw;
+    }
+    .exclude-modal-content h3 {
+      font-size: 15px;
+      color: #f0f6fc;
+      margin-bottom: 12px;
+    }
+    .exclude-modal-content input {
+      width: 100%;
+      padding: 8px 10px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #c9d1d9;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+    .exclude-modal-content input:focus {
+      outline: none;
+      border-color: #58a6ff;
+    }
+    .exclude-modal-buttons {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .source-checkbox {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .source-checkbox:hover { border-color: #58a6ff; }
+    .source-checkbox.checked { border-color: #238636; background: #0d1f0d; }
+    .source-checkbox input { accent-color: #238636; cursor: pointer; }
+    .source-checkbox .src-label { font-size: 13px; color: #c9d1d9; flex: 1; }
+    .source-checkbox .src-info { font-size: 11px; color: #8b949e; }
+
+    .thumb {
+      width: 80px;
+      height: 50px;
+      object-fit: cover;
+      border-radius: 4px;
+    }
+
+    .listing-link {
+      color: #58a6ff;
+      text-decoration: none;
+    }
+
+    .listing-link:hover { text-decoration: underline; }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #30363d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+
+    .spinner-sm {
+      width: 12px;
+      height: 12px;
+      border-width: 1.5px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span>Tesla</span> Model X HW4 Dashboard</h1>
+    <div class="controls">
+      <label class="toggle-label">
+        <input type="checkbox" id="showAll"> Show all listings (unfiltered)
+      </label>
+      <button class="btn" id="excludedBtn" onclick="toggleExcludedPanel()">Excluded (<span id="excludedCount">0</span>)</button>
+      <button class="btn btn-primary" id="refreshBtn" onclick="doRefresh()">Refresh Now</button>
+      <span id="lastUpdate" class="toggle-label"></span>
+    </div>
+  </div>
+  <div class="stats-bar" id="statsBar">
+    <div class="stat">Listings: <span class="stat-value" id="statCount">0</span></div>
+    <div class="stat">Avg Price: <span class="stat-value" id="statAvg">--</span></div>
+    <div class="stat">Price Range: <span class="stat-value" id="statRange">--</span></div>
+    <div class="stat">HW4 Confirmed: <span class="stat-value" id="statConfirmed">0</span></div>
+    <div class="stat">6-Seat: <span class="stat-value" id="statSixSeat">0</span></div>
+    <div class="stat">Favorites: <span class="stat-value" id="statFavorites">0</span></div>
+    <div class="stat" id="statSourcesWrap">Sources: <span id="statSources">loading...</span></div>
+  </div>
+  <div class="progress-panel" id="progressPanel">
+    <div class="progress-header">
+      <span class="spinner spinner-sm" id="progressSpinner"></span>
+      <span id="progressTitle">Refreshing data...</span>
+    </div>
+    <div class="progress-log" id="progressLog"></div>
+  </div>
+  <div class="excluded-panel" id="excludedPanel">
+    <h3>Manually Excluded Listings</h3>
+    <div id="excludedList"></div>
+  </div>
+  <div class="exclude-modal" id="excludeModal">
+    <div class="exclude-modal-content">
+      <h3>Exclude <span id="excludeModalVin"></span></h3>
+      <input type="text" id="excludeReason" placeholder="Reason (optional, e.g. 'high mileage for price', 'bad photos')" />
+      <div class="exclude-modal-buttons">
+        <button class="btn" onclick="closeExcludeModal()">Cancel</button>
+        <button class="btn" style="border-color:#da3633;color:#da3633" onclick="confirmExclude()">Exclude</button>
+      </div>
+    </div>
+  </div>
+  <div class="exclude-modal" id="refreshModal">
+    <div class="exclude-modal-content" style="width: 460px;">
+      <h3>Select Sources to Refresh</h3>
+      <div style="margin-bottom: 12px; display: flex; gap: 8px;">
+        <button class="btn" onclick="toggleAllSources(true)" style="font-size:11px; padding:3px 8px;">Select All</button>
+        <button class="btn" onclick="toggleAllSources(false)" style="font-size:11px; padding:3px 8px;">Deselect All</button>
+      </div>
+      <div id="sourceCheckboxes" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 16px;"></div>
+      <div class="exclude-modal-buttons">
+        <button class="btn" onclick="closeRefreshModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="confirmRefresh()">Refresh Selected</button>
+      </div>
+    </div>
+  </div>
+  <div class="grid-container" id="gridContainer">
+    <div id="grid" class="ag-theme-alpine-dark" style="width: 100%; height: 100%;"></div>
+  </div>
+
+  <script>
+    const gridDiv = document.getElementById('grid');
+    let gridApi = null;
+    let autoRefreshTimer = null;
+    let pollTimer = null;
+    let lastPollTime = 0;
+
+    const currencyFmt = new Intl.NumberFormat('en-US', {
+      style: 'currency', currency: 'USD', maximumFractionDigits: 0
+    });
+
+    const numFmt = new Intl.NumberFormat('en-US');
+
+    const HW4_CYCLE = ['confirmed', 'likely', 'uncertain', 'ask dealer', 'no'];
+
+    const columnDefs = [
+      {
+        headerName: '',
+        field: 'isFavorite',
+        colId: 'favorite',
+        width: 50,
+        sortable: true,
+        filter: false,
+        cellRenderer: (p) => {
+          const isFav = p.value;
+          return `<button class="star-btn ${isFav ? 'active' : ''}" onclick="toggleFavorite('${p.data.vin}', ${!isFav})">${isFav ? '\u2605' : '\u2606'}</button>`;
+        }
+      },
+      {
+        headerName: '',
+        field: 'imageUrl',
+        width: 100,
+        sortable: false,
+        filter: false,
+        cellRenderer: (params) => {
+          if (!params.value) return '';
+          return `<img class="thumb" src="${params.value}" loading="lazy" onerror="this.style.display='none'">`;
+        }
+      },
+      { headerName: 'Year', field: 'year', width: 80, filter: 'agNumberColumnFilter' },
+      { headerName: 'Trim', field: 'trim', width: 140, filter: 'agTextColumnFilter' },
+      {
+        headerName: 'Price',
+        field: 'price',
+        width: 110,
+        filter: 'agNumberColumnFilter',
+        valueFormatter: (p) => p.value ? currencyFmt.format(p.value) : '--',
+        sort: 'asc'
+      },
+      {
+        headerName: 'Mileage',
+        field: 'mileage',
+        width: 100,
+        filter: 'agNumberColumnFilter',
+        valueFormatter: (p) => p.value ? numFmt.format(p.value) + ' mi' : '--'
+      },
+      { headerName: 'Ext. Color', field: 'exteriorColor', width: 120, filter: 'agTextColumnFilter' },
+      { headerName: 'Int. Color', field: 'interiorColor', width: 120, filter: 'agTextColumnFilter' },
+      {
+        headerName: 'Seats',
+        field: 'seatCount',
+        width: 80,
+        filter: 'agNumberColumnFilter',
+        cellRenderer: (p) => {
+          if (p.value == null) return '<span class="badge badge-unknown">Unknown</span>';
+          return String(p.value);
+        }
+      },
+      {
+        headerName: 'HW4',
+        field: 'hw4Status',
+        width: 110,
+        filter: 'agSetColumnFilter',
+        cellRenderer: (p) => {
+          const cls = {
+            confirmed: 'badge-confirmed',
+            likely: 'badge-likely',
+            uncertain: 'badge-uncertain',
+            'ask dealer': 'badge-ask-dealer',
+            no: 'badge-unknown'
+          }[p.value] || 'badge-unknown';
+          return `<span class="badge badge-clickable ${cls}" onclick="cycleHw4('${p.data.vin}', '${p.value}')" title="Click to change">${p.value || '?'}</span>`;
+        }
+      },
+      {
+        headerName: 'Title',
+        field: 'titleStatus',
+        width: 100,
+        filter: 'agSetColumnFilter',
+        cellRenderer: (p) => {
+          if (!p.value) return '<span class="badge badge-unknown">N/A</span>';
+          const v = p.value.toLowerCase();
+          if (v === 'clean') return '<span class="badge badge-clean">Clean</span>';
+          if (v === 'salvage' || v === 'rebuilt' || v === 'flood' || v === 'lemon') return `<span class="badge badge-salvage">${p.value}</span>`;
+          if (v === 'branded') return '<span class="badge badge-branded">Branded</span>';
+          return `<span class="badge badge-unknown">${p.value}</span>`;
+        }
+      },
+      {
+        headerName: 'Accidents',
+        field: 'accidentHistory',
+        width: 105,
+        filter: 'agSetColumnFilter',
+        cellRenderer: (p) => {
+          if (!p.value || p.value === 'unknown') return '<span class="badge badge-unknown">Unknown</span>';
+          if (p.value === 'clean') return '<span class="badge badge-clean">None</span>';
+          if (p.value === 'accident') return '<span class="badge badge-accident">Accident</span>';
+          return `<span class="badge badge-unknown">${p.value}</span>`;
+        }
+      },
+      { headerName: 'Dealer', field: 'dealerName', width: 160, filter: 'agTextColumnFilter' },
+      { headerName: 'Location', field: 'dealerLocation', width: 140, filter: 'agTextColumnFilter' },
+      { headerName: 'Source', field: 'source', width: 100, filter: 'agSetColumnFilter' },
+      {
+        headerName: 'Found',
+        field: 'firstSeen',
+        width: 110,
+        filter: 'agDateColumnFilter',
+        valueFormatter: (p) => {
+          if (!p.value) return '--';
+          const d = new Date(p.value);
+          const today = new Date().toDateString();
+          if (d.toDateString() === today) {
+            return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+          }
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        },
+        comparator: (a, b) => new Date(a) - new Date(b)
+      },
+      {
+        headerName: 'VIN',
+        field: 'vin',
+        width: 180,
+        filter: 'agTextColumnFilter'
+      },
+      {
+        headerName: 'Link',
+        field: 'url',
+        width: 80,
+        sortable: false,
+        filter: false,
+        cellRenderer: (p) => {
+          if (!p.value) return '';
+          return `<a class="listing-link" href="${p.value}" target="_blank" rel="noopener">View</a>`;
+        }
+      },
+      {
+        headerName: '',
+        field: 'vin',
+        colId: 'exclude',
+        width: 75,
+        sortable: false,
+        filter: false,
+        cellRenderer: (p) => {
+          return `<button class="btn-exclude" onclick="openExcludeModal('${p.value}')">Exclude</button>`;
+        }
+      }
+    ];
+
+    const gridOptions = {
+      columnDefs,
+      defaultColDef: {
+        sortable: true,
+        resizable: true,
+        suppressMovable: false,
+      },
+      animateRows: true,
+      rowHeight: 56,
+      headerHeight: 40,
+      getRowId: (params) => params.data.vin,
+      suppressCellFocus: true,
+      enableCellTextSelection: true,
+      ensureDomOrder: true,
+      pagination: true,
+      paginationPageSize: 50,
+      paginationPageSizeSelector: [25, 50, 100, 200],
+      getRowClass: (params) => {
+        if (params.data && params.data.isFavorite) return 'row-favorite';
+        return '';
+      },
+    };
+
+    gridApi = agGrid.createGrid(gridDiv, gridOptions);
+
+    // --- Progress panel ---
+
+    function showProgress() {
+      const panel = document.getElementById('progressPanel');
+      const container = document.getElementById('gridContainer');
+      const log = document.getElementById('progressLog');
+      log.innerHTML = '';
+      panel.classList.add('active');
+      container.classList.add('with-progress');
+      document.getElementById('progressSpinner').style.display = '';
+      document.getElementById('progressTitle').textContent = 'Refreshing data...';
+    }
+
+    function hideProgress(delayMs = 0) {
+      setTimeout(() => {
+        document.getElementById('progressPanel').classList.remove('active');
+        document.getElementById('gridContainer').classList.remove('with-progress');
+      }, delayMs);
+    }
+
+    function addProgressLine(text, cls = '') {
+      const log = document.getElementById('progressLog');
+      const line = document.createElement('div');
+      line.className = 'line' + (cls ? ' ' + cls : '');
+      line.textContent = text;
+      log.appendChild(line);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    // --- Polling for progress ---
+
+    function startPolling() {
+      if (pollTimer) return;
+      lastPollTime = Date.now();
+      pollTimer = setInterval(pollProgress, 800);
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    async function pollProgress() {
+      try {
+        const res = await fetch('/api/refresh/progress?since=' + (lastPollTime - 1000));
+        const data = await res.json();
+
+        for (const entry of data.entries) {
+          if (entry.time > lastPollTime) {
+            addProgressLine(entry.msg, entry.type === 'done' ? 'done' : entry.type === 'error' ? 'error' : '');
+            lastPollTime = entry.time;
+          }
+        }
+
+        if (!data.inProgress) {
+          const btn = document.getElementById('refreshBtn');
+          btn.disabled = false;
+          btn.textContent = 'Refresh Now';
+
+          const hasDone = data.entries.some(e => e.type === 'done');
+          const hasError = data.entries.some(e => e.type === 'error');
+
+          if (hasDone) {
+            document.getElementById('progressSpinner').style.display = 'none';
+            document.getElementById('progressTitle').textContent = 'Refresh complete';
+            loadListings();
+          } else if (hasError) {
+            document.getElementById('progressSpinner').style.display = 'none';
+            document.getElementById('progressTitle').textContent = 'Refresh failed';
+          }
+
+          stopPolling();
+          hideProgress(5000);
+        }
+      } catch {
+        // network blip, keep polling
+      }
+    }
+
+    // --- Stats ---
+
+    function updateStats(listings) {
+      document.getElementById('statCount').textContent = listings.length;
+
+      if (listings.length > 0) {
+        const prices = listings.map(l => l.price).filter(p => p > 0);
+        if (prices.length > 0) {
+          const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+          const min = Math.min(...prices);
+          const max = Math.max(...prices);
+          document.getElementById('statAvg').textContent = currencyFmt.format(avg);
+          document.getElementById('statRange').textContent =
+            currencyFmt.format(min) + ' -- ' + currencyFmt.format(max);
+        }
+
+        document.getElementById('statConfirmed').textContent =
+          listings.filter(l => l.hw4Status === 'confirmed').length;
+        document.getElementById('statSixSeat').textContent =
+          listings.filter(l => l.seatCount === 6).length;
+        document.getElementById('statFavorites').textContent =
+          listings.filter(l => l.isFavorite).length;
+
+        loadSources();
+      } else {
+        document.getElementById('statAvg').textContent = '--';
+        document.getElementById('statRange').textContent = '--';
+        document.getElementById('statConfirmed').textContent = '0';
+        document.getElementById('statSixSeat').textContent = '0';
+        document.getElementById('statFavorites').textContent = '0';
+        document.getElementById('statSources').textContent = '--';
+        loadSources();
+      }
+    }
+
+    async function loadListings() {
+      const showAll = document.getElementById('showAll').checked;
+      const params = showAll ? '?all=true' : '';
+      try {
+        const res = await fetch('/api/listings' + params);
+        const data = await res.json();
+        gridApi.setGridOption('rowData', data.listings);
+        updateStats(data.listings);
+        document.getElementById('lastUpdate').textContent =
+          'Updated: ' + new Date(data.timestamp).toLocaleTimeString();
+      } catch (err) {
+        console.error('Failed to load listings:', err);
+      }
+    }
+
+    const ALL_SOURCES = ["marketcheck", "autotrader", "tesla", "truecar", "edmunds", "carfax", "ebay", "cars.com", "cargurus"];
+    let lastSourceCounts = {};
+
+    function doRefresh() {
+      openRefreshModal();
+    }
+
+    async function openRefreshModal() {
+      try {
+        const res = await fetch('/api/sources');
+        const d = await res.json();
+        lastSourceCounts = d.allBySrc || {};
+      } catch { /* use empty */ }
+
+      const container = document.getElementById('sourceCheckboxes');
+      container.innerHTML = ALL_SOURCES.map(s => {
+        const count = lastSourceCounts[s] || 0;
+        const info = count > 0 ? `${count} last run` : 'no data';
+        return `<label class="source-checkbox checked">
+          <input type="checkbox" value="${s}" checked onchange="this.parentElement.classList.toggle('checked', this.checked)">
+          <span class="src-label">${s}</span>
+          <span class="src-info">${info}</span>
+        </label>`;
+      }).join('');
+
+      document.getElementById('refreshModal').classList.add('active');
+    }
+
+    function closeRefreshModal() {
+      document.getElementById('refreshModal').classList.remove('active');
+    }
+
+    function toggleAllSources(checked) {
+      document.querySelectorAll('#sourceCheckboxes .source-checkbox').forEach(label => {
+        label.querySelector('input').checked = checked;
+        label.classList.toggle('checked', checked);
+      });
+    }
+
+    async function confirmRefresh() {
+      const checkboxes = document.querySelectorAll('#sourceCheckboxes input:checked');
+      const sources = Array.from(checkboxes).map(cb => cb.value);
+      closeRefreshModal();
+
+      if (sources.length === 0) return;
+
+      const btn = document.getElementById('refreshBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Refreshing...';
+      showProgress();
+
+      try {
+        const body = sources.length === ALL_SOURCES.length ? {} : { sources };
+        const res = await fetch('/api/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.inProgress) {
+          addProgressLine('Refresh already in progress, showing live status...');
+        } else if (!data.success) {
+          addProgressLine('Failed to start refresh: ' + (data.error || 'Unknown'), 'error');
+          btn.disabled = false;
+          btn.textContent = 'Refresh Now';
+          hideProgress(5000);
+          return;
+        }
+        startPolling();
+      } catch (err) {
+        addProgressLine('Network error: ' + err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Refresh Now';
+        hideProgress(5000);
+      }
+    }
+
+    document.getElementById('showAll').addEventListener('change', loadListings);
+
+    // --- Exclude feature ---
+
+    let excludeTargetVin = null;
+
+    function openExcludeModal(vin) {
+      excludeTargetVin = vin;
+      document.getElementById('excludeModalVin').textContent = vin;
+      document.getElementById('excludeReason').value = '';
+      document.getElementById('excludeModal').classList.add('active');
+      document.getElementById('excludeReason').focus();
+    }
+
+    function closeExcludeModal() {
+      document.getElementById('excludeModal').classList.remove('active');
+      excludeTargetVin = null;
+    }
+
+    async function confirmExclude() {
+      if (!excludeTargetVin) return;
+      const reason = document.getElementById('excludeReason').value.trim();
+      try {
+        await fetch('/api/exclude', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vin: excludeTargetVin, reason })
+        });
+        closeExcludeModal();
+        loadListings();
+        loadExcluded();
+      } catch (err) {
+        console.error('Failed to exclude:', err);
+      }
+    }
+
+    function toggleExcludedPanel() {
+      const panel = document.getElementById('excludedPanel');
+      panel.classList.toggle('active');
+      if (panel.classList.contains('active')) {
+        loadExcluded();
+      }
+    }
+
+    async function loadExcluded() {
+      try {
+        const res = await fetch('/api/excluded');
+        const data = await res.json();
+        const list = document.getElementById('excludedList');
+        document.getElementById('excludedCount').textContent = data.excluded.length;
+
+        if (data.excluded.length === 0) {
+          list.innerHTML = '<div style="color:#484f58;font-size:12px;padding:8px 0">No excluded listings</div>';
+          return;
+        }
+
+        list.innerHTML = data.excluded.map(e => `
+          <div class="excluded-item">
+            <span class="vin">${e.vin}</span>
+            <span class="reason">${e.reason || '(no reason)'}</span>
+            <span class="date">${new Date(e.excludedAt).toLocaleDateString()}</span>
+            <button class="btn-restore" onclick="restoreVin('${e.vin}')">Restore</button>
+          </div>
+        `).join('');
+      } catch (err) {
+        console.error('Failed to load excluded:', err);
+      }
+    }
+
+    async function restoreVin(vin) {
+      try {
+        await fetch('/api/exclude', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vin })
+        });
+        loadListings();
+        loadExcluded();
+      } catch (err) {
+        console.error('Failed to restore:', err);
+      }
+    }
+
+    // --- HW4 toggle ---
+
+    async function cycleHw4(vin, currentStatus) {
+      const idx = HW4_CYCLE.indexOf(currentStatus);
+      const next = HW4_CYCLE[(idx + 1) % HW4_CYCLE.length];
+      try {
+        await fetch('/api/hw4', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vin, hw4Status: next })
+        });
+        // Update the row in-place without full reload
+        const rowNode = gridApi.getRowNode(vin);
+        if (rowNode) {
+          rowNode.setDataValue('hw4Status', next);
+        } else {
+          loadListings();
+        }
+      } catch (err) {
+        console.error('Failed to update HW4:', err);
+      }
+    }
+
+    // --- Favorites ---
+
+    async function toggleFavorite(vin, shouldFavorite) {
+      try {
+        if (shouldFavorite) {
+          await fetch('/api/favorite', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vin })
+          });
+        } else {
+          await fetch('/api/favorite', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vin })
+          });
+        }
+        loadListings();
+      } catch (err) {
+        console.error('Failed to toggle favorite:', err);
+      }
+    }
+
+    // --- Source diagnostics ---
+
+    async function loadSources() {
+      try {
+        const res = await fetch('/api/sources');
+        const d = await res.json();
+        const el = document.getElementById('statSources');
+        el.innerHTML = d.sources.map(s => {
+          const all = d.allBySrc[s] || 0;
+          const filt = d.filtBySrc[s] || 0;
+          const cls = all > 0 ? 'source-chip has-data' : 'source-chip zero';
+          return `<span class="${cls}" title="${s}: ${filt} filtered / ${all} total">${s} <span class="src-count">${filt}/${all}</span></span>`;
+        }).join('');
+      } catch (err) {
+        console.error('Failed to load sources:', err);
+      }
+    }
+
+    // Close modals on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeExcludeModal();
+        closeRefreshModal();
+      }
+    });
+
+    // Close modals on backdrop click
+    document.getElementById('excludeModal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeExcludeModal();
+    });
+    document.getElementById('refreshModal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeRefreshModal();
+    });
+
+    // Submit on Enter in reason input
+    document.getElementById('excludeReason').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') confirmExclude();
+    });
+
+    // Initial load
+    loadListings();
+    loadExcluded();
+
+    // Auto-refresh every 5 minutes
+    autoRefreshTimer = setInterval(loadListings, 5 * 60 * 1000);
+  </script>
+</body>
+</html>
