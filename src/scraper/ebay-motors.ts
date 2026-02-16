@@ -124,7 +124,7 @@ export async function scrapeEbayMotors(): Promise<RawListing[]> {
           const trim = trimMatch?.[1]?.trim() ?? "";
 
           const price =
-            parseInt((item.price ?? "").replace(/[^0-9]/g, ""), 10) || 0;
+            Math.round(parseFloat((item.price ?? "").replace(/,/g, "")) || 0);
           const mileage =
             parseInt((item.mileage ?? "").replace(/[^0-9]/g, ""), 10) || 0;
 
