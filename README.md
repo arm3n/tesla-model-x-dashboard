@@ -1,25 +1,24 @@
 # Tesla Model X HW4 Dashboard
 
-A local dashboard that aggregates used Tesla Model X listings from 9 sources, automatically detects HW4 hardware from the VIN, and filters for non-black interiors, 6-seat configurations, clean titles, and no accident history.
+A local dashboard that aggregates used Tesla Model X listings from 8 sources, automatically detects HW4 hardware from the VIN, and filters for non-black interiors, 6-seat configurations, clean titles, and no accident history.
 
 ![Dashboard](docs/screenshot-dashboard.png)
 
 ## Features
 
 ### Multi-Source Aggregation
-Pulls listings from **9 sources** simultaneously and deduplicates by VIN:
+Pulls listings from **8 sources** simultaneously and deduplicates by VIN:
 
 | Source | Method | Data Quality |
 |--------|--------|-------------|
 | MarketCheck | REST API | Price, mileage, colors, dealer, title status, accident history |
 | AutoTrader | API scraping | Full listing details with images |
-| Tesla Inventory | Playwright | Official Tesla CPO/used inventory |
-| TrueCar | Playwright | Price, mileage, dealer info |
-| Edmunds | Playwright | Full specs and dealer data |
-| CarFax | Playwright | Title status, accident history |
-| eBay Motors | Playwright | Auction and fixed-price listings |
-| Cars.com | Playwright | Embedded JSON with VIN and colors |
-| CarGurus | Playwright | Listing details and deal ratings |
+| Edmunds | nodriver (undetected Chrome) | Full specs, battery health, title/accident history via Redux store |
+| Tesla Inventory | nodriver (undetected Chrome) | Official Tesla CPO/used inventory |
+| TrueCar | fetch + Cheerio | Price, mileage, trim, dealer info via JSON-LD |
+| eBay Motors | eBay Browse API + Playwright | Auction and fixed-price listings |
+| Cars.com | fetch + Cheerio | Embedded JSON with VIN and colors |
+| CarGurus | fetch + Cheerio | Listing details and deal ratings |
 
 ### VIN-Based Intelligence
 
@@ -50,14 +49,12 @@ The default view applies all filters automatically:
 - **Exclude** listings with optional reason (e.g., "bad photos", "overpriced")
 - **Thumbnail images** from listing photos
 - **Direct links** to original listings on dealer sites
-- **Per-source stats** in the header showing filtered/total counts
+- **Per-source scraped counts** in the header (e.g., `edmunds 220/1183` = 220 scraped, 1183 primary in DB)
 - **Summary bar**: total listings, average price, price range, HW4 confirmed count, 6-seat count, favorites count
 
 ### Source Selection
 
 Choose which sources to refresh — skip slow scrapers when you only need a quick update from the API sources.
-
-![Refresh Modal](docs/screenshot-refresh-modal.png)
 
 ### Data Persistence
 
@@ -71,8 +68,9 @@ Choose which sources to refresh — skip slow scrapers when you only need a quic
 
 - **[Bun](https://bun.sh)** — runtime, HTTP server, SQLite, bundler
 - **[AG Grid Community](https://www.ag-grid.com/)** — data grid (CDN, no build step)
-- **[Playwright](https://playwright.dev/)** — headless browser for 7 scraper sources
-- **[Cheerio](https://cheerio.js.org/)** — HTML parsing
+- **[Playwright](https://playwright.dev/)** — headless browser for eBay, Cars.com, CarGurus scrapers
+- **[nodriver](https://github.com/nicegui-io/nodriver)** — undetected Chrome for Edmunds and Tesla (bypasses Akamai Bot Manager)
+- **[Cheerio](https://cheerio.js.org/)** — HTML/JSON-LD parsing
 - **[MarketCheck API](https://www.marketcheck.com/)** — primary data source (requires API key)
 - **[NHTSA vPIC API](https://vpic.nhtsa.dot.gov/api/)** — free VIN decoding
 
@@ -84,6 +82,7 @@ Zero frontend build step. Single HTML file with inline CSS/JS served by Bun.
 
 - [Bun](https://bun.sh) v1.3+
 - [Node.js](https://nodejs.org) 18+ (required for Playwright subprocess — Bun has a pipe incompatibility with Playwright)
+- [Python](https://python.org) 3.10+ with `nodriver` package (for Edmunds and Tesla scrapers)
 - A [MarketCheck](https://www.marketcheck.com/) API key (free tier available)
 
 ### Install
@@ -93,6 +92,7 @@ git clone https://github.com/arm3n/tesla-model-x-dashboard.git
 cd tesla-model-x-dashboard
 bun install
 npx playwright install chromium
+pip install nodriver
 ```
 
 ### Configure
@@ -134,14 +134,14 @@ src/
   normalize.ts           Deduplication, VIN enrichment, filtering logic
   scraper/
     marketcheck.ts       MarketCheck REST API
-    autotrader.ts        AutoTrader API scraping
-    tesla.ts             Tesla official inventory (Playwright)
-    truecar.ts           TrueCar (Playwright)
-    edmunds.ts           Edmunds (Playwright)
-    carfax.ts            CarFax (Playwright)
-    ebay-motors.ts       eBay Motors (Playwright)
-    cars-com.ts          Cars.com (Playwright)
-    cargurus.ts          CarGurus (Playwright)
+    auto-dev.ts          Auto.dev REST API
+    autotrader.ts        AutoTrader API scraping (multi-sort strategy)
+    tesla.ts             Tesla inventory (nodriver subprocess)
+    truecar.ts           TrueCar (fetch + Cheerio, JSON-LD extraction)
+    edmunds.ts           Edmunds (nodriver subprocess, __PRELOADED_STATE__ extraction)
+    ebay-motors.ts       eBay Motors (Browse API + Playwright details)
+    cars-com.ts          Cars.com (fetch + Cheerio)
+    cargurus.ts          CarGurus (fetch + Cheerio)
     run-in-node.ts       Node.js subprocess bridge for Playwright
     types.ts             Shared Listing/RawListing interfaces
   vin/
@@ -151,6 +151,8 @@ src/
 scripts/
   refresh.ts             Orchestrates all scrapers with progress callbacks
   pw-scraper-runner.ts   Node.js entry point for Playwright scrapers
+  edmunds-fetch.py       Python nodriver scraper for Edmunds (anti-detection, paginated)
+  tesla-fetch.py         Python nodriver scraper for Tesla inventory
 public/
   index.html             Single-file dashboard (AG Grid + vanilla JS)
 ```
@@ -160,7 +162,7 @@ public/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/listings` | Filtered listings (`?all=true` for unfiltered) |
-| GET | `/api/sources` | Per-source listing counts |
+| GET | `/api/sources` | Per-source scraped counts and DB attribution |
 | POST | `/api/refresh` | Start data refresh (`{ sources: ["marketcheck"] }` for selective) |
 | GET | `/api/refresh/progress` | Poll refresh progress (`?since=timestamp`) |
 | POST | `/api/exclude` | Exclude a VIN (`{ vin, reason }`) |
@@ -170,6 +172,7 @@ public/
 | POST | `/api/favorite` | Favorite a VIN (`{ vin, note }`) |
 | DELETE | `/api/favorite` | Unfavorite a VIN (`{ vin }`) |
 | GET | `/api/favorites` | List all favorites |
+| GET | `/api/scraper-logs` | Scraper run history with per-source stats |
 
 ## HW4 Detection Logic
 
