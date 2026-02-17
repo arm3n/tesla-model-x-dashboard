@@ -73,7 +73,9 @@ function parseDetailPage(html: string): {
   const intMatch = text.match(/Interior\s*[Cc]olor[:\s]*([^\n]+)/);
   const priceMatch = text.match(/\$([\d,]+)/);
   const mileageMatch = text.match(/([\d,]+)\s*mi/);
-  const dealerMatch = text.match(/Dealer\s*(?:Info|Details|Name)?[:\s]*([^\n]+)/i);
+  // Extract dealer from structured elements, not raw text (avoids CSS garbage)
+  const dealerEl = $('[class*="dealer-name"], [data-qa="dealer-name"], .seller-name').first();
+  const dealer = dealerEl.length ? dealerEl.text().trim() : "";
   const locationMatch = text.match(/([A-Za-z\s]+,\s*[A-Z]{2}\s*\d{5})/);
 
   return {
@@ -82,7 +84,7 @@ function parseDetailPage(html: string): {
     interiorColor: intMatch?.[1]?.trim() ?? "",
     price: parseInt((priceMatch?.[1] ?? "").replace(/,/g, ""), 10) || 0,
     mileage: parseInt((mileageMatch?.[1] ?? "").replace(/,/g, ""), 10) || 0,
-    dealer: dealerMatch?.[1]?.trim() ?? "",
+    dealer,
     location: locationMatch?.[1]?.trim() ?? "",
   };
 }
@@ -105,45 +107,64 @@ export async function scrapeCarsCom(): Promise<RawListing[]> {
         ? "https://www.cars.com/shopping/results/?stock_type=used&makes[]=tesla&models[]=tesla-model_x&maximum_distance=all&page_size=100&year_min=2023&year_max=2026"
         : `https://www.cars.com/shopping/results/?stock_type=used&makes[]=tesla&models[]=tesla-model_x&maximum_distance=all&page_size=100&year_min=2023&year_max=2026&page=${pg}`;
 
-    try {
-      const res = await fetch(url, { headers: FETCH_HEADERS });
-      if (!res.ok) {
-        console.log(`[Cars.com] Page ${pg} returned ${res.status}, stopping`);
+    let pageItems: ReturnType<typeof parseSearchPage> = [];
+    let pageOk = false;
+
+    // Retry search page up to 2 times (critical for page 1)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const res = await fetch(url, { headers: FETCH_HEADERS });
+        if (!res.ok) {
+          if (attempt === 0 && pg === 1) {
+            console.log(`[Cars.com] Page 1 returned ${res.status}, retrying in 10s...`);
+            await delay(10000 + Math.random() * 5000);
+            continue;
+          }
+          console.log(`[Cars.com] Page ${pg} returned ${res.status}, stopping`);
+          break;
+        }
+
+        const html = await res.text();
+        pageItems = parseSearchPage(html);
+        pageOk = true;
         break;
+      } catch (err) {
+        if (attempt === 0) {
+          console.log(`[Cars.com] Page ${pg} fetch error, retrying in 10s... (${String(err).slice(0, 60)})`);
+          await delay(10000 + Math.random() * 5000);
+        } else {
+          console.error(`[Cars.com] Page ${pg} failed after retry:`, String(err).slice(0, 100));
+        }
       }
+    }
 
-      const html = await res.text();
-      const pageItems = parseSearchPage(html);
+    if (!pageOk) break;
 
-      if (pageItems.length === 0) {
-        console.log(`[Cars.com] No listings on page ${pg}, stopping`);
-        break;
-      }
-
-      for (const item of pageItems) {
-        results.push({
-          vin: "",
-          source: "cars.com",
-          url: item.url,
-          price: item.price,
-          mileage: item.mileage,
-          year: item.year,
-          trim: item.trim,
-          exteriorColor: "",
-          interiorColor: "",
-          seatCount: null,
-          dealerName: item.dealer,
-          dealerLocation: item.location,
-          imageUrl: item.imageUrl,
-          listedDate: null,
-        });
-      }
-
-      console.log(`[Cars.com] Page ${pg}: ${pageItems.length} listings (total: ${results.length})`);
-    } catch (err) {
-      console.error(`[Cars.com] Error on page ${pg}:`, err);
+    if (pageItems.length === 0) {
+      console.log(`[Cars.com] No listings on page ${pg}, stopping`);
       break;
     }
+
+    for (const item of pageItems) {
+      results.push({
+        vin: "",
+        source: "cars.com",
+        url: item.url,
+        price: item.price,
+        mileage: item.mileage,
+        year: item.year,
+        trim: item.trim,
+        exteriorColor: "",
+        interiorColor: "",
+        seatCount: null,
+        dealerName: item.dealer,
+        dealerLocation: item.location,
+        imageUrl: item.imageUrl,
+        listedDate: null,
+      });
+    }
+
+    console.log(`[Cars.com] Page ${pg}: ${pageItems.length} listings (total: ${results.length})`);
 
     if (pg < maxPages) {
       await delay(3000 + Math.random() * 2000);
@@ -152,34 +173,54 @@ export async function scrapeCarsCom(): Promise<RawListing[]> {
 
   // Phase 2: Fetch detail pages for VINs and colors
   const detailLimit = Math.min(results.length, 80);
+  let detailOk = 0;
+  let detailFail = 0;
   if (detailLimit > 0) {
     console.log(`[Cars.com] Fetching ${detailLimit} detail pages for VINs...`);
     for (let i = 0; i < detailLimit; i++) {
       const listing = results[i]!;
-      try {
-        const res = await fetch(listing.url, { headers: FETCH_HEADERS });
-        if (res.ok) {
-          const html = await res.text();
-          const details = parseDetailPage(html);
-          if (details.vin && details.vin.length === 17) {
-            listing.vin = details.vin;
+
+      // Try up to 2 attempts per detail page
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await fetch(listing.url, { headers: FETCH_HEADERS });
+          if (res.ok) {
+            const html = await res.text();
+            const details = parseDetailPage(html);
+            if (details.vin && details.vin.length === 17) {
+              listing.vin = details.vin;
+            }
+            if (details.exteriorColor) listing.exteriorColor = details.exteriorColor;
+            if (details.interiorColor) listing.interiorColor = details.interiorColor;
+            if (details.price && !listing.price) listing.price = details.price;
+            if (details.mileage && !listing.mileage) listing.mileage = details.mileage;
+            if (details.dealer && !listing.dealerName) listing.dealerName = details.dealer;
+            if (details.location && !listing.dealerLocation) listing.dealerLocation = details.location;
+            detailOk++;
+            break;
+          } else if (attempt === 0) {
+            console.log(`[Cars.com] Detail ${i + 1}/${detailLimit} returned ${res.status}, retrying...`);
+            await delay(5000 + Math.random() * 3000);
+          } else {
+            console.log(`[Cars.com] Detail ${i + 1}/${detailLimit} returned ${res.status} on retry, skipping`);
+            detailFail++;
           }
-          if (details.exteriorColor) listing.exteriorColor = details.exteriorColor;
-          if (details.interiorColor) listing.interiorColor = details.interiorColor;
-          if (details.price && !listing.price) listing.price = details.price;
-          if (details.mileage && !listing.mileage) listing.mileage = details.mileage;
-          if (details.dealer && !listing.dealerName) listing.dealerName = details.dealer;
-          if (details.location && !listing.dealerLocation) listing.dealerLocation = details.location;
+        } catch (err) {
+          if (attempt === 0) {
+            await delay(5000 + Math.random() * 3000);
+          } else {
+            console.log(`[Cars.com] Detail ${i + 1}/${detailLimit} error: ${String(err).slice(0, 80)}`);
+            detailFail++;
+          }
         }
-      } catch {
-        // detail page failed, skip
       }
 
-      if (i < detailLimit - 1) await delay(1000 + Math.random() * 500);
+      if (i < detailLimit - 1) await delay(1500 + Math.random() * 1500);
       if (i > 0 && i % 20 === 0) {
-        console.log(`[Cars.com] Detail progress: ${i}/${detailLimit}`);
+        console.log(`[Cars.com] Detail progress: ${i}/${detailLimit} (ok=${detailOk}, fail=${detailFail})`);
       }
     }
+    console.log(`[Cars.com] Detail pages: ${detailOk} ok, ${detailFail} failed out of ${detailLimit}`);
   }
 
   const valid = results.filter((r) => r.vin && r.vin.length === 17);

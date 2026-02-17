@@ -15,40 +15,70 @@ function parseItem(item: any): RawListing | null {
   const vin = (item.VIN ?? item.vin ?? "").toUpperCase();
   if (!vin || vin.length !== 17) return null;
 
-  const optionCodes: string[] = item.OptionCodeList ?? item.OPTIONCODELIST ?? [];
-  const optionCodesStr: string = typeof optionCodes === "string" ? optionCodes : "";
-  const codeList = Array.isArray(optionCodes)
-    ? optionCodes
-    : optionCodesStr.split(",").filter(Boolean);
+  // API v4 returns OptionCodeList as comma-separated string: "$MDLX,$MTX13,..."
+  const rawCodes = item.OptionCodeList ?? item.OPTIONCODELIST ?? [];
+  const codeList = Array.isArray(rawCodes)
+    ? rawCodes
+    : typeof rawCodes === "string"
+      ? rawCodes.split(",").filter(Boolean)
+      : [];
 
+  // Seat count from CABIN_CONFIG (API v4): ["SEVEN"], ["SIX"], ["FIVE"]
   let seatCount: number | null = item.seatCount ?? null;
-  const trimStr = (item.TRIM ?? item.TrimName ?? "").toLowerCase();
+  if (!seatCount && Array.isArray(item.CABIN_CONFIG)) {
+    const cabin = item.CABIN_CONFIG[0]?.toUpperCase();
+    if (cabin === "SEVEN") seatCount = 7;
+    else if (cabin === "SIX") seatCount = 6;
+    else if (cabin === "FIVE") seatCount = 5;
+  }
+  // Fallback: option codes
   if (!seatCount) {
     for (const code of codeList) {
-      if (/6.?seat/i.test(code) || code === "ST02" || code === "MTY06") seatCount = 6;
-      else if (/7.?seat/i.test(code) || code === "ST03" || code === "MTY07") seatCount = 7;
-      else if (/5.?seat/i.test(code) || code === "ST01" || code === "MTY05") seatCount = 5;
+      if (/6.?seat/i.test(code) || code === "ST02" || code === "MTY06" || code === "$CC02") seatCount = 6;
+      else if (/7.?seat/i.test(code) || code === "ST03" || code === "MTY07" || code === "$CC04") seatCount = 7;
+      else if (/5.?seat/i.test(code) || code === "ST01" || code === "MTY05" || code === "$CC01") seatCount = 5;
     }
   }
+  const trimStr = (item.TrimName ?? "").toLowerCase();
   if (!seatCount && trimStr.includes("6 seat")) seatCount = 6;
   if (!seatCount && trimStr.includes("7 seat")) seatCount = 7;
 
   const price = item.Price ?? item.PurchasePrice ?? item.price ?? 0;
   const mileage = item.Odometer ?? item.OdometerValue ?? item.odometer ?? 0;
   const year = item.Year ?? item.year ?? 0;
-  const trim = item.TRIM ?? item.TrimName ?? item.trim ?? "";
+  // API v4: TRIM is array ["MXAWD"], TrimName is string "Model X All-Wheel Drive"
+  const trim = item.TrimName ?? (Array.isArray(item.TRIM) ? item.TRIM[0] : item.TRIM) ?? item.trim ?? "";
 
-  // Decode option codes to fill in colors if not directly available
+  // Colors: API v4 returns PAINT/INTERIOR as arrays: ["WHITE"], ["BLACK"]
+  const paintRaw = Array.isArray(item.PAINT) ? item.PAINT[0] : item.PAINT;
+  const intRaw = Array.isArray(item.INTERIOR) ? item.INTERIOR[0] : item.INTERIOR;
   const decoded = codeList.length > 0 ? decodeOptionCodes(codeList) : null;
-  const extColor = item.PAINT ?? item.ExteriorColor ?? item.exteriorColor ?? decoded?.exteriorColor ?? "";
-  const intColor = item.INTERIOR ?? item.InteriorColor ?? item.interiorColor ?? decoded?.interiorColor ?? "";
+  const extColor = paintRaw ?? item.ExteriorColor ?? decoded?.exteriorColor ?? "";
+  const intColor = intRaw ?? item.InteriorColor ?? decoded?.interiorColor ?? "";
 
   const city = item.City ?? item.city ?? "";
   const state = item.StateProvince ?? item.state ?? "";
   const location = city && state ? `${city}, ${state}` : city || state;
 
-  const images = item.CompositorViews?.frontView ?? item.imageUrl ?? item.ImageUrl ?? null;
-  const titleStatus = item.TitleStatus ?? item.titleStatus ?? null;
+  // Image: prefer first VehiclePhoto, then compositor view
+  let imageUrl: string | null = null;
+  if (Array.isArray(item.VehiclePhotos) && item.VehiclePhotos.length > 0) {
+    imageUrl = item.VehiclePhotos[0].imageUrl ?? null;
+  }
+  if (!imageUrl) {
+    imageUrl = item.CompositorViews?.frontView ?? item.imageUrl ?? item.ImageUrl ?? null;
+  }
+
+  // Title and accident history from API v4
+  const rawTitle = item.TitleStatus ?? item.titleStatus ?? null;
+  const titleStatus = rawTitle === "CLEAN" ? "clean" : rawTitle?.toLowerCase() ?? null;
+
+  const vehicleHistory = (item.VehicleHistory ?? "").toUpperCase();
+  const accidentHistory: "clean" | "accident" | "unknown" =
+    vehicleHistory.includes("ACCIDENT") ? "accident"
+    : item.DamageDisclosure === true ? "accident"
+    : vehicleHistory === "" ? "unknown"
+    : "clean";
 
   return {
     vin,
@@ -63,10 +93,11 @@ function parseItem(item: any): RawListing | null {
     seatCount,
     dealerName: "Tesla",
     dealerLocation: location,
-    imageUrl: images,
-    listedDate: item.DisplayDate ?? item.firstSeenDate ?? null,
+    imageUrl,
+    listedDate: item.OriginalDeliveryDate ?? item.DisplayDate ?? item.firstSeenDate ?? null,
     optionCodes: codeList,
-    titleStatus: titleStatus === "CLEAN" ? "clean" : titleStatus,
+    titleStatus,
+    accidentHistory,
   };
 }
 
