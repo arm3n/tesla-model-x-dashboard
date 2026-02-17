@@ -211,6 +211,9 @@ export function filterListings(listings: Listing[]): Listing[] {
     // Filter out vehicles with known accidents
     if (l.accidentHistory === "accident") return false;
 
+    // ESA eligibility: must be under 50,000 miles
+    if (l.mileage > 50_000) return false;
+
     return true;
   });
 }

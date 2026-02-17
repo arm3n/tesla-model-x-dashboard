@@ -59,6 +59,7 @@ export async function scrapeMarketCheck(): Promise<RawListing[]> {
       model: "Model X",
       car_type: "used",
       year_range: "2023-2026",
+      miles_range: "0-50000",
       rows: String(PAGE_SIZE),
       start: String(start),
     });

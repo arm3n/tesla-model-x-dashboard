@@ -243,6 +243,54 @@
     }
     .btn-exclude:hover { background: #da3633; color: #fff; }
 
+    .btn-edit-row {
+      background: none;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      color: #8b949e;
+      padding: 3px 8px;
+      transition: all 0.15s;
+    }
+    .btn-edit-row:hover { border-color: #58a6ff; color: #58a6ff; }
+    .btn-edit-row.has-override { border-color: #d29922; color: #d29922; }
+    .btn-edit-row.has-override:hover { border-color: #f0c040; color: #f0c040; }
+
+    .edit-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .edit-field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .edit-field span {
+      font-size: 11px;
+      color: #8b949e;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .edit-field input, .edit-field select {
+      padding: 6px 8px;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      color: #c9d1d9;
+      font-size: 13px;
+    }
+    .edit-field input:focus, .edit-field select:focus {
+      outline: none;
+      border-color: #58a6ff;
+    }
+    .edit-field input.overridden, .edit-field select.overridden {
+      border-color: #d29922;
+    }
+
     .btn-restore {
       padding: 2px 8px;
       border: 1px solid #3fb950;
@@ -510,6 +558,46 @@
       </div>
     </div>
   </div>
+  <div class="exclude-modal" id="editModal">
+    <div class="exclude-modal-content" style="width: 560px;">
+      <h3>Edit <span id="editModalVin" style="font-family:monospace;"></span></h3>
+      <div class="edit-grid">
+        <label class="edit-field"><span>Price</span><input type="number" id="editPrice" min="0" /></label>
+        <label class="edit-field"><span>Mileage</span><input type="number" id="editMileage" min="0" /></label>
+        <label class="edit-field"><span>Year</span><input type="number" id="editYear" min="2020" max="2026" /></label>
+        <label class="edit-field"><span>Trim</span><input type="text" id="editTrim" /></label>
+        <label class="edit-field"><span>Ext. Color</span><input type="text" id="editExtColor" /></label>
+        <label class="edit-field"><span>Int. Color</span><input type="text" id="editIntColor" /></label>
+        <label class="edit-field"><span>Seats</span><input type="number" id="editSeats" min="5" max="7" /></label>
+        <label class="edit-field">
+          <span>Title Status</span>
+          <select id="editTitle">
+            <option value="">(unknown)</option>
+            <option value="clean">Clean</option>
+            <option value="salvage">Salvage</option>
+            <option value="rebuilt">Rebuilt</option>
+            <option value="branded">Branded</option>
+            <option value="lemon">Lemon</option>
+          </select>
+        </label>
+        <label class="edit-field">
+          <span>Accidents</span>
+          <select id="editAccidents">
+            <option value="unknown">Unknown</option>
+            <option value="clean">None</option>
+            <option value="accident">Accident</option>
+          </select>
+        </label>
+        <label class="edit-field"><span>Dealer Name</span><input type="text" id="editDealer" /></label>
+        <label class="edit-field" style="grid-column: 1 / -1;"><span>Dealer Location</span><input type="text" id="editLocation" /></label>
+      </div>
+      <div class="exclude-modal-buttons">
+        <button class="btn" id="editResetBtn" style="margin-right:auto;border-color:#d29922;color:#d29922;display:none;" onclick="resetListingOverrides()">Reset Overrides</button>
+        <button class="btn" onclick="closeEditModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="confirmEdit()">Save</button>
+      </div>
+    </div>
+  </div>
   <div class="grid-container" id="gridContainer">
     <div id="grid" class="ag-theme-alpine-dark" style="width: 100%; height: 100%;"></div>
   </div>
@@ -667,12 +755,14 @@
       {
         headerName: '',
         field: 'vin',
-        colId: 'exclude',
-        width: 75,
+        colId: 'actions',
+        width: 130,
         sortable: false,
         filter: false,
         cellRenderer: (p) => {
-          return `<button class="btn-exclude" onclick="openExcludeModal('${p.value}')">Exclude</button>`;
+          const hasOverride = listingOverrides.has(p.value);
+          const editCls = hasOverride ? 'btn-edit-row has-override' : 'btn-edit-row';
+          return `<button class="${editCls}" onclick="openEditModal('${p.value}')" title="Edit fields">Edit</button> <button class="btn-exclude" onclick="openExcludeModal('${p.value}')">Exclude</button>`;
         }
       }
     ];
@@ -1088,6 +1178,143 @@
       return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
     }
 
+    // --- Listing field edit ---
+
+    let listingOverrides = new Map(); // vin -> { fields, updatedAt }
+    let editModalVin = null;
+    let editOriginalData = null;
+
+    async function loadListingOverrides() {
+      try {
+        const res = await fetch('/api/listing-overrides');
+        const data = await res.json();
+        listingOverrides = new Map(data.overrides.map(o => [o.vin, o]));
+      } catch { /* ignore */ }
+    }
+
+    function openEditModal(vin) {
+      editModalVin = vin;
+      const rowNode = gridApi.getRowNode(vin);
+      if (!rowNode) return;
+      const d = rowNode.data;
+      editOriginalData = { ...d };
+
+      document.getElementById('editModalVin').textContent = vin;
+      document.getElementById('editPrice').value = d.price || '';
+      document.getElementById('editMileage').value = d.mileage || '';
+      document.getElementById('editYear').value = d.year || '';
+      document.getElementById('editTrim').value = d.trim || '';
+      document.getElementById('editExtColor').value = d.exteriorColor || '';
+      document.getElementById('editIntColor').value = d.interiorColor || '';
+      document.getElementById('editSeats').value = d.seatCount != null ? d.seatCount : '';
+      document.getElementById('editTitle').value = d.titleStatus || '';
+      document.getElementById('editAccidents').value = d.accidentHistory || 'unknown';
+      document.getElementById('editDealer').value = d.dealerName || '';
+      document.getElementById('editLocation').value = d.dealerLocation || '';
+
+      // Highlight overridden fields
+      const override = listingOverrides.get(vin);
+      const overriddenFields = override ? Object.keys(override.fields) : [];
+      const fieldMap = {
+        price: 'editPrice', mileage: 'editMileage', year: 'editYear', trim: 'editTrim',
+        exteriorColor: 'editExtColor', interiorColor: 'editIntColor', seatCount: 'editSeats',
+        titleStatus: 'editTitle', accidentHistory: 'editAccidents',
+        dealerName: 'editDealer', dealerLocation: 'editLocation',
+      };
+      for (const [field, elId] of Object.entries(fieldMap)) {
+        const el = document.getElementById(elId);
+        el.classList.toggle('overridden', overriddenFields.includes(field));
+      }
+
+      document.getElementById('editResetBtn').style.display = override ? '' : 'none';
+      document.getElementById('editModal').classList.add('active');
+      document.getElementById('editPrice').focus();
+    }
+
+    function closeEditModal() {
+      document.getElementById('editModal').classList.remove('active');
+      editModalVin = null;
+      editOriginalData = null;
+    }
+
+    async function confirmEdit() {
+      if (!editModalVin || !editOriginalData) return;
+
+      const fields = {};
+      const price = parseInt(document.getElementById('editPrice').value, 10);
+      const mileage = parseInt(document.getElementById('editMileage').value, 10);
+      const year = parseInt(document.getElementById('editYear').value, 10);
+      const seats = document.getElementById('editSeats').value ? parseInt(document.getElementById('editSeats').value, 10) : null;
+      const trim = document.getElementById('editTrim').value.trim();
+      const extColor = document.getElementById('editExtColor').value.trim();
+      const intColor = document.getElementById('editIntColor').value.trim();
+      const titleStatus = document.getElementById('editTitle').value || null;
+      const accidents = document.getElementById('editAccidents').value;
+      const dealer = document.getElementById('editDealer').value.trim();
+      const location = document.getElementById('editLocation').value.trim();
+
+      if (!isNaN(price) && price !== editOriginalData.price) fields.price = price;
+      if (!isNaN(mileage) && mileage !== editOriginalData.mileage) fields.mileage = mileage;
+      if (!isNaN(year) && year !== editOriginalData.year) fields.year = year;
+      if (trim !== (editOriginalData.trim || '')) fields.trim = trim;
+      if (extColor !== (editOriginalData.exteriorColor || '')) fields.exteriorColor = extColor;
+      if (intColor !== (editOriginalData.interiorColor || '')) fields.interiorColor = intColor;
+      if (seats !== editOriginalData.seatCount) fields.seatCount = seats;
+      if (titleStatus !== (editOriginalData.titleStatus || null)) fields.titleStatus = titleStatus;
+      if (accidents !== (editOriginalData.accidentHistory || 'unknown')) fields.accidentHistory = accidents;
+      if (dealer !== (editOriginalData.dealerName || '')) fields.dealerName = dealer;
+      if (location !== (editOriginalData.dealerLocation || '')) fields.dealerLocation = location;
+
+      if (Object.keys(fields).length === 0) {
+        closeEditModal();
+        return;
+      }
+
+      try {
+        await fetch('/api/listing', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vin: editModalVin, fields })
+        });
+
+        // Update row in-place
+        const rowNode = gridApi.getRowNode(editModalVin);
+        if (rowNode) {
+          for (const [k, v] of Object.entries(fields)) {
+            rowNode.setDataValue(k, v);
+          }
+        }
+
+        // Track that this VIN has overrides
+        const existing = listingOverrides.get(editModalVin);
+        const merged = { ...(existing?.fields || {}), ...fields };
+        listingOverrides.set(editModalVin, { vin: editModalVin, fields: merged, updatedAt: new Date().toISOString() });
+
+        // Refresh the actions cell to show the override indicator
+        if (rowNode) gridApi.refreshCells({ rowNodes: [rowNode], columns: ['actions'] });
+
+        closeEditModal();
+      } catch (err) {
+        console.error('Failed to save edit:', err);
+      }
+    }
+
+    async function resetListingOverrides() {
+      if (!editModalVin) return;
+      try {
+        await fetch('/api/listing-overrides', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vin: editModalVin })
+        });
+        listingOverrides.delete(editModalVin);
+        closeEditModal();
+        loadListings(); // full reload to get original scraped values
+      } catch (err) {
+        console.error('Failed to reset overrides:', err);
+      }
+    }
+
     // --- Favorites ---
 
     async function toggleFavorite(vin, shouldFavorite) {
@@ -1135,6 +1362,7 @@
         closeExcludeModal();
         closeRefreshModal();
         closeUrlModal();
+        closeEditModal();
       }
     });
 
@@ -1147,6 +1375,9 @@
     });
     document.getElementById('urlModal').addEventListener('click', (e) => {
       if (e.target === e.currentTarget) closeUrlModal();
+    });
+    document.getElementById('editModal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeEditModal();
     });
 
     // Submit on Enter in modal inputs
@@ -1246,7 +1477,7 @@
     }
 
     // Initial load
-    loadUrlOverrides().then(() => loadListings());
+    Promise.all([loadUrlOverrides(), loadListingOverrides()]).then(() => loadListings());
     loadExcluded();
 
     // Auto-refresh every 5 minutes

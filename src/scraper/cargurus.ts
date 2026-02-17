@@ -51,6 +51,7 @@ export async function scrapeCarGurus(): Promise<RawListing[]> {
       distance: "50000",
       startYear: "2023",
       endYear: "2026",
+      maxMileage: "50000",
       maxResults: String(maxResults),
       offset: String(offset),
       filtersModified: "true",

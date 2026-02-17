@@ -80,6 +80,7 @@ async function fetchAutotraderPage(
       startYear: "2023",
       endYear: "2026",
       searchRadius: "0",
+      maxMileage: "50000",
       zip: "10001",
       numRecords: String(pageSize),
       firstRecord: String(firstRecord),
@@ -282,7 +283,7 @@ async function scrapeAutotraderPlaywright(): Promise<RawListing[]> {
     });
 
     await page.goto(
-      "https://www.autotrader.com/cars-for-sale/used-cars/tesla/model-x?startYear=2023&endYear=2026&searchRadius=0&zip=10001&numRecords=100",
+      "https://www.autotrader.com/cars-for-sale/used-cars/tesla/model-x?startYear=2023&endYear=2026&maxMileage=50000&searchRadius=0&zip=10001&numRecords=100",
       { waitUntil: "networkidle", timeout: 30_000 }
     );
 

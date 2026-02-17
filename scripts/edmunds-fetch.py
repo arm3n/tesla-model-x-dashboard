@@ -149,7 +149,7 @@ async def main():
     base_url = (
         "https://www.edmunds.com/inventory/srp.html"
         "?inventorytype=used&make=tesla&model=tesla|model-x"
-        "&radius=6000&sort=price%3Aasc&year=2023-2026"
+        "&radius=6000&sort=price%3Aasc&year=2023-2026&maxMileage=50000"
     )
 
     all_items = []

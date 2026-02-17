@@ -1,6 +1,7 @@
 import { resolve } from "path";
-import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs } from "./db.ts";
+import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, updateListingFields, removeListingOverrides, getListingOverrides } from "./db.ts";
 import { refresh } from "../scripts/refresh.ts";
+import { runEnrichment } from "./scraper/enrich.ts";
 
 const PUBLIC_DIR = resolve(import.meta.dir, "../public");
 const PORT = 3000;
@@ -171,9 +172,61 @@ const server = Bun.serve({
       return Response.json({ total: all.length, filtered: filtered.length, allBySrc, filtBySrc, rawBySrc, sources: ALL_SOURCES });
     }
 
+    // Edit listing fields
+    if (url.pathname === "/api/listing" && req.method === "PATCH") {
+      const body = await req.json() as { vin?: string; fields?: Record<string, any> };
+      if (!body.vin || !body.fields || Object.keys(body.fields).length === 0) {
+        return Response.json({ error: "vin and fields required" }, { status: 400 });
+      }
+      const allowed = new Set(['price', 'mileage', 'year', 'trim', 'exteriorColor', 'interiorColor', 'seatCount', 'dealerName', 'dealerLocation', 'titleStatus', 'accidentHistory']);
+      const clean: Record<string, any> = {};
+      for (const [k, v] of Object.entries(body.fields)) {
+        if (allowed.has(k)) clean[k] = v;
+      }
+      if (Object.keys(clean).length === 0) {
+        return Response.json({ error: "no valid fields provided" }, { status: 400 });
+      }
+      updateListingFields(body.vin, clean);
+      return Response.json({ success: true, vin: body.vin, updated: Object.keys(clean) });
+    }
+
+    // Remove all listing overrides for a VIN
+    if (url.pathname === "/api/listing-overrides" && req.method === "DELETE") {
+      const body = await req.json() as { vin?: string };
+      if (!body.vin) {
+        return Response.json({ error: "vin required" }, { status: 400 });
+      }
+      removeListingOverrides(body.vin);
+      return Response.json({ success: true, vin: body.vin });
+    }
+
+    // List all listing overrides
+    if (url.pathname === "/api/listing-overrides") {
+      return Response.json({ overrides: getListingOverrides() });
+    }
+
     if (url.pathname === "/api/scraper-logs") {
       const limit = parseInt(url.searchParams.get("limit") ?? "100", 10);
       return Response.json({ logs: getScraperLogs(limit) });
+    }
+
+    // Trigger VIN enrichment (search dealer sites for missing data)
+    if (url.pathname === "/api/enrich" && req.method === "POST") {
+      if (refreshInProgress) {
+        return Response.json({ error: "Refresh in progress, try after it completes" }, { status: 409 });
+      }
+      refreshInProgress = true;
+      logProgress("Starting VIN enrichment...");
+      try {
+        const result = await runEnrichment((msg) => logProgress(msg));
+        logProgress(`Enrichment done: ${result.enriched} enriched of ${result.candidates} candidates`, "done");
+        return Response.json({ success: true, ...result });
+      } catch (err) {
+        logProgress("Enrichment error: " + String(err), "error");
+        return Response.json({ error: String(err) }, { status: 500 });
+      } finally {
+        refreshInProgress = false;
+      }
     }
 
     if (url.pathname === "/api/refresh" && req.method === "POST") {

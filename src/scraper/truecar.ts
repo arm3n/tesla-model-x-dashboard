@@ -2,7 +2,7 @@ import * as cheerio from "cheerio";
 import type { RawListing } from "./types.ts";
 import { runScraperInNode } from "./run-in-node.ts";
 
-const BASE_URL = "https://www.truecar.com/used-cars-for-sale/listings/tesla/model-x/year-2023-max-year-2026/";
+const BASE_URL = "https://www.truecar.com/used-cars-for-sale/listings/tesla/model-x/year-2023-max-year-2026/max-mileage-50000/";
 
 const FETCH_HEADERS = {
   "User-Agent":

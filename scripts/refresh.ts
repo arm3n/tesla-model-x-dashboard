@@ -10,8 +10,11 @@ import { scrapeAutoDev } from "../src/scraper/auto-dev.ts";
 import { normalize, filterListings } from "../src/normalize.ts";
 import {
   upsertListings,
+  markInactive,
   getExistingListingsMap,
   insertScraperLog,
+  applyEnrichmentCache,
+  applyListingOverrides,
 } from "../src/db.ts";
 import type { RawListing } from "../src/scraper/types.ts";
 
@@ -152,6 +155,20 @@ export async function refresh(
 
   log("Saving to database...");
   upsertListings(normalized);
+
+  // Mark vehicles no longer found by any scraper as inactive (sold/delisted).
+  // Only on full refreshes — partial refreshes shouldn't deactivate other sources' VINs.
+  if (!onlySources || onlySources.length === 0) {
+    const activeVins = new Set(normalized.map((l) => l.vin));
+    markInactive(activeVins);
+    log(`Marked inactive: VINs not in current ${activeVins.size} results`);
+  }
+
+  // Fill blanks from cached enrichment data (dealer site data)
+  applyEnrichmentCache();
+
+  // Re-apply manual field overrides (user edits persist across refreshes)
+  applyListingOverrides();
 
   // Build per-source dedup/filter counts from normalized results
   const SOURCE_NAME_MAP: Record<string, string> = {
