@@ -129,9 +129,8 @@ export function upsertListings(listings: Listing[]): void {
       WHEN 'cars.com' THEN 4
       WHEN 'truecar' THEN 5
       WHEN 'edmunds' THEN 6
-      WHEN 'carfax' THEN 7
-      WHEN 'ebay' THEN 8
-      WHEN 'cargurus' THEN 9
+      WHEN 'ebay' THEN 7
+      WHEN 'cargurus' THEN 8
       ELSE 99
     END`;
   const NEW_PRIORITY_SQL = `
@@ -143,9 +142,8 @@ export function upsertListings(listings: Listing[]): void {
       WHEN 'cars.com' THEN 4
       WHEN 'truecar' THEN 5
       WHEN 'edmunds' THEN 6
-      WHEN 'carfax' THEN 7
-      WHEN 'ebay' THEN 8
-      WHEN 'cargurus' THEN 9
+      WHEN 'ebay' THEN 7
+      WHEN 'cargurus' THEN 8
       ELSE 99
     END`;
 

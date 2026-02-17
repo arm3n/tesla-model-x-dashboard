@@ -57,9 +57,8 @@ const SOURCE_PRIORITY: Record<Source, number> = {
   "cars.com": 4,
   truecar: 5,
   edmunds: 6,
-  carfax: 7,
-  ebay: 8,
-  cargurus: 9,
+  ebay: 7,
+  cargurus: 8,
 };
 
 const SALVAGE_PATTERNS = /\b(salvage|rebuilt|flood|lemon|junk|parts only|certificate of destruction|non-repairable)\b/i;

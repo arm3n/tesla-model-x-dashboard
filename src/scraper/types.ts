@@ -7,8 +7,7 @@ export type Source =
   | "truecar"
   | "autotrader"
   | "ebay"
-  | "edmunds"
-  | "carfax";
+  | "edmunds";
 
 export interface Listing {
   vin: string;

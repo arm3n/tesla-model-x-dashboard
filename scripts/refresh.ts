@@ -6,7 +6,6 @@ import { scrapeTrueCar } from "../src/scraper/truecar.ts";
 import { scrapeAutotrader } from "../src/scraper/autotrader.ts";
 import { scrapeEbayMotors } from "../src/scraper/ebay-motors.ts";
 import { scrapeEdmunds } from "../src/scraper/edmunds.ts";
-import { scrapeCarfax } from "../src/scraper/carfax.ts";
 import { scrapeAutoDev } from "../src/scraper/auto-dev.ts";
 import { normalize, filterListings } from "../src/normalize.ts";
 import {
@@ -25,7 +24,6 @@ export interface RefreshStats {
   autotrader: number;
   truecar: number;
   edmunds: number;
-  carfax: number;
   ebay: number;
   carsCom: number;
   carGurus: number;
@@ -46,7 +44,6 @@ const SCRAPERS: ScraperDef[] = [
   { name: "Autotrader", key: "autotrader", fn: scrapeAutotrader },
   { name: "TrueCar", key: "truecar", fn: scrapeTrueCar },
   { name: "Edmunds", key: "edmunds", fn: scrapeEdmunds },
-  { name: "CarFax", key: "carfax", fn: scrapeCarfax },
   { name: "eBay Motors", key: "ebay", fn: scrapeEbayMotors },
   { name: "Cars.com", key: "carsCom", fn: scrapeCarsCom },
   { name: "CarGurus", key: "carGurus", fn: scrapeCarGurus },
@@ -65,7 +62,6 @@ const SOURCE_KEY_MAP: Record<string, string> = {
   autotrader: "autotrader",
   ebay: "ebay",
   edmunds: "edmunds",
-  carfax: "carfax",
 };
 
 export async function refresh(
@@ -116,7 +112,6 @@ export async function refresh(
     autotrader: 0,
     truecar: 0,
     edmunds: 0,
-    carfax: 0,
     ebay: 0,
     carsCom: 0,
     carGurus: 0,
@@ -162,7 +157,7 @@ export async function refresh(
   const SOURCE_NAME_MAP: Record<string, string> = {
     tesla: "tesla", marketcheck: "marketcheck", autoDev: "auto.dev",
     autotrader: "autotrader", truecar: "truecar", edmunds: "edmunds",
-    carfax: "carfax", ebay: "ebay", carsCom: "cars.com", carGurus: "cargurus",
+    ebay: "ebay", carsCom: "cars.com", carGurus: "cargurus",
   };
 
   const dedupBySource: Record<string, number> = {};

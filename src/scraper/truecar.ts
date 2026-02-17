@@ -23,32 +23,63 @@ function extractFromHtml(html: string): RawListing[] {
   const listings: RawListing[] = [];
 
   // Try JSON-LD structured data first
+  // TrueCar nests listings under a parent Vehicle with a `vehicles` array
   $('script[type="application/ld+json"]').each((_i, el) => {
     try {
       const json = JSON.parse($(el).text());
-      const items = Array.isArray(json) ? json : json["@graph"] ?? [json];
-      for (const item of items) {
-        if (item["@type"] !== "Car" && item["@type"] !== "Vehicle") continue;
-        const vin = (item.vehicleIdentificationNumber ?? "").toUpperCase();
+      // Collect all Vehicle objects, including nested vehicles[]
+      const candidates: any[] = [];
+      const roots = Array.isArray(json) ? json : json["@graph"] ?? [json];
+      for (const item of roots) {
+        if (item["@type"] === "Vehicle" || item["@type"] === "Car") {
+          if (Array.isArray(item.vehicles)) {
+            candidates.push(...item.vehicles);
+          } else {
+            candidates.push(item);
+          }
+        }
+      }
+
+      for (const item of candidates) {
+        // TrueCar uses lowercase "vehicleidentificationnumber"
+        const vin = (
+          item.vehicleIdentificationNumber ??
+          item.vehicleidentificationnumber ??
+          item.offers?.sku ??
+          ""
+        ).toUpperCase();
         if (!vin || vin.length !== 17) continue;
+
+        const offerUrl = item.offers?.url ?? "";
+        const url = offerUrl.startsWith("http")
+          ? offerUrl
+          : offerUrl
+            ? `https://www.truecar.com${offerUrl}`
+            : `https://www.truecar.com/used-cars-for-sale/listing/${vin}/`;
+
+        // Address may be a string ("1717 Auto Park Way, City, ST 12345") or object
+        let dealerLocation = "";
+        const addr = item.offers?.seller?.address;
+        if (typeof addr === "string") {
+          const locMatch = addr.match(/,\s*([A-Za-z\s]+),\s*([A-Z]{2})\b/);
+          dealerLocation = locMatch ? `${locMatch[1].trim()}, ${locMatch[2]}` : "";
+        } else if (addr?.addressLocality) {
+          dealerLocation = `${addr.addressLocality}, ${addr.addressRegion ?? ""}`;
+        }
 
         listings.push({
           vin,
           source: "truecar",
-          url: item.url
-            ? (item.url.startsWith("http") ? item.url : `https://www.truecar.com${item.url}`)
-            : `https://www.truecar.com/used-cars-for-sale/listing/${vin}/`,
+          url,
           price: parseFloat(item.offers?.price ?? "0") || 0,
           mileage: parseInt(item.mileageFromOdometer?.value ?? "0", 10) || 0,
-          year: parseInt(item.vehicleModelDate ?? "0", 10) || 0,
-          trim: item.vehicleConfiguration ?? item.model ?? "",
+          year: parseInt(item.releaseDate ?? item.vehicleModelDate ?? "0", 10) || 0,
+          trim: item.trim ?? item.vehicleConfiguration ?? "",
           exteriorColor: item.color ?? "",
           interiorColor: item.vehicleInteriorColor ?? "",
           seatCount: null,
           dealerName: item.offers?.seller?.name ?? "",
-          dealerLocation: item.offers?.seller?.address?.addressLocality
-            ? `${item.offers.seller.address.addressLocality}, ${item.offers.seller.address.addressRegion ?? ""}`
-            : "",
+          dealerLocation,
           imageUrl: item.image ?? null,
           listedDate: null,
         });
@@ -129,6 +160,7 @@ export async function scrapeTrueCar(): Promise<RawListing[]> {
   }
 
   const results: RawListing[] = [];
+  const seenVins = new Set<string>();
   const maxPages = 20;
 
   for (let pg = 1; pg <= maxPages; pg++) {
@@ -149,8 +181,22 @@ export async function scrapeTrueCar(): Promise<RawListing[]> {
         break;
       }
 
-      results.push(...pageListings);
-      console.log(`[TrueCar] Page ${pg}: ${pageListings.length} listings (total: ${results.length})`);
+      // Deduplicate: stop if page returns only already-seen VINs
+      let newCount = 0;
+      for (const listing of pageListings) {
+        if (!seenVins.has(listing.vin)) {
+          seenVins.add(listing.vin);
+          results.push(listing);
+          newCount++;
+        }
+      }
+
+      console.log(`[TrueCar] Page ${pg}: ${newCount} new / ${pageListings.length} total (${results.length} collected)`);
+
+      if (newCount === 0) {
+        console.log(`[TrueCar] No new listings on page ${pg}, stopping`);
+        break;
+      }
     } catch (err) {
       console.error(`[TrueCar] Error on page ${pg}:`, err);
       break;

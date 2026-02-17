@@ -130,7 +130,7 @@ const server = Bun.serve({
 
     // Source stats — always returns all 9 sources even if 0
     if (url.pathname === "/api/sources") {
-      const ALL_SOURCES = ["marketcheck", "auto.dev", "cars.com", "cargurus", "tesla", "truecar", "autotrader", "ebay", "edmunds", "carfax"];
+      const ALL_SOURCES = ["marketcheck", "auto.dev", "cars.com", "cargurus", "tesla", "truecar", "autotrader", "ebay", "edmunds"];
       const all = getAllListings();
       const filtered = getFilteredListings();
       const allBySrc: Record<string, number> = {};
