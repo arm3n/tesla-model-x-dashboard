@@ -1119,10 +1119,10 @@
         const d = await res.json();
         const el = document.getElementById('statSources');
         el.innerHTML = d.sources.map(s => {
-          const all = d.allBySrc[s] || 0;
-          const filt = d.filtBySrc[s] || 0;
-          const cls = all > 0 ? 'source-chip has-data' : 'source-chip zero';
-          return `<span class="${cls}" title="${s}: ${filt} filtered / ${all} total">${s} <span class="src-count">${filt}/${all}</span></span>`;
+          const raw = d.rawBySrc?.[s] || 0;
+          const owned = d.allBySrc[s] || 0;
+          const cls = raw > 0 ? 'source-chip has-data' : 'source-chip zero';
+          return `<span class="${cls}" title="${s}: ${raw} scraped, ${owned} primary in DB">${s} <span class="src-count">${raw}${owned > 0 ? '/' + owned : ''}</span></span>`;
         }).join('');
       } catch (err) {
         console.error('Failed to load sources:', err);

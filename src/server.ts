@@ -128,17 +128,47 @@ const server = Bun.serve({
       return Response.json({ favorites: getFavorites() });
     }
 
-    // Source stats — always returns all 9 sources even if 0
+    // Source stats — returns per-source raw counts from last full refresh
     if (url.pathname === "/api/sources") {
       const ALL_SOURCES = ["marketcheck", "auto.dev", "cars.com", "cargurus", "tesla", "truecar", "autotrader", "ebay", "edmunds"];
       const all = getAllListings();
       const filtered = getFilteredListings();
+
+      // Map display names (scraper logs) → API source names
+      const DISPLAY_TO_KEY: Record<string, string> = {
+        "MarketCheck": "marketcheck", "Auto.dev": "auto.dev", "Cars.com": "cars.com",
+        "CarGurus": "cargurus", "Tesla Inventory": "tesla", "TrueCar": "truecar",
+        "Autotrader": "autotrader", "eBay Motors": "ebay", "Edmunds": "edmunds",
+      };
+
+      // Get latest full refresh from scraper logs (the one with the most sources)
+      const logs = getScraperLogs(100);
+      const byRefresh = new Map<string, typeof logs>();
+      for (const l of logs) {
+        if (!byRefresh.has(l.refreshId)) byRefresh.set(l.refreshId, []);
+        byRefresh.get(l.refreshId)!.push(l);
+      }
+      // Find the most recent refresh with 5+ sources (full or near-full refresh)
+      const rawBySrc: Record<string, number> = {};
+      for (const s of ALL_SOURCES) rawBySrc[s] = 0;
+      for (const [, entries] of byRefresh) {
+        if (entries.length >= 5) {
+          for (const e of entries) {
+            const key = DISPLAY_TO_KEY[e.source] ?? e.source.toLowerCase();
+            if (ALL_SOURCES.includes(key)) rawBySrc[key] = e.rawCount;
+          }
+          break;
+        }
+      }
+
+      // DB source attribution (which source "owns" each VIN)
       const allBySrc: Record<string, number> = {};
       const filtBySrc: Record<string, number> = {};
       for (const s of ALL_SOURCES) { allBySrc[s] = 0; filtBySrc[s] = 0; }
       for (const l of all) allBySrc[l.source] = (allBySrc[l.source] || 0) + 1;
       for (const l of filtered) filtBySrc[l.source] = (filtBySrc[l.source] || 0) + 1;
-      return Response.json({ total: all.length, filtered: filtered.length, allBySrc, filtBySrc, sources: ALL_SOURCES });
+
+      return Response.json({ total: all.length, filtered: filtered.length, allBySrc, filtBySrc, rawBySrc, sources: ALL_SOURCES });
     }
 
     if (url.pathname === "/api/scraper-logs") {
