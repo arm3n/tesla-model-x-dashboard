@@ -871,9 +871,6 @@
         if (_savedState.pageSize) {
           gridApi.paginationSetPageSize(_savedState.pageSize);
         }
-        if (_savedState.filterModel) {
-          gridApi.setFilterModel(_savedState.filterModel);
-        }
         if (_savedState.columnState) {
           gridApi.applyColumnState({ state: _savedState.columnState, applyOrder: true });
         }
@@ -925,7 +922,29 @@
       onGridReady: () => {
         restorePreLoadState();
         Promise.all([loadUrlOverrides(), loadListingOverrides()]).then(() => {
-          loadListings().then(() => { _initComplete = true; });
+          loadListings().then(() => {
+            // Apply filter model AFTER data loads to avoid AG Grid v35 race condition
+            // (setGridOption('rowData') can reset filters applied to an empty grid)
+            const restoredFilter = (_savedState?.filterModel && Object.keys(_savedState.filterModel).length > 0)
+              ? _savedState.filterModel : {};
+            if (Object.keys(restoredFilter).length > 0) {
+              gridApi.setFilterModel(restoredFilter);
+            }
+            // Force-save using the KNOWN correct filter (not gridApi.getFilterModel()
+            // because setFilterModel() is async in AG Grid v35 and hasn't settled yet)
+            try {
+              const state = {
+                filterModel: restoredFilter,
+                columnState: gridApi.getColumnState(),
+                showAll: document.getElementById('showAll').checked,
+                pageSize: gridApi.paginationGetPageSize(),
+              };
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            } catch {}
+            // Delay _initComplete so AG Grid's async settle events (rAF, internal
+            // debounces) are still blocked by the saveState guard
+            setTimeout(() => { _initComplete = true; }, 1000);
+          });
         });
       },
     };
