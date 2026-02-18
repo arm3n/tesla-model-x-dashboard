@@ -338,6 +338,8 @@ export function getFilteredListings(): (Listing & { isFavorite: boolean })[] {
     WHERE l.isActive = 1
       AND l.vin NOT IN (SELECT vin FROM excluded_vins)
       AND l.hw4Status IN ('confirmed', 'likely', 'uncertain', 'ask dealer')
+      AND (l.interiorColor IS NULL OR LOWER(l.interiorColor) LIKE '%white%'
+           OR LOWER(l.interiorColor) NOT LIKE '%black%')
       AND (l.seatCount = 6 OR l.seatCount IS NULL)
       AND (l.titleStatus IS NULL OR LOWER(l.titleStatus) NOT IN ('salvage', 'rebuilt', 'flood', 'lemon', 'junk', 'branded'))
       AND l.accidentHistory != 'accident'
