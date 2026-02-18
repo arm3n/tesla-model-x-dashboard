@@ -175,12 +175,14 @@ export async function scrapeCarsCom(): Promise<RawListing[]> {
   const detailLimit = Math.min(results.length, 80);
   let detailOk = 0;
   let detailFail = 0;
+  let consecutive403 = 0;
   if (detailLimit > 0) {
     console.log(`[Cars.com] Fetching ${detailLimit} detail pages for VINs...`);
     for (let i = 0; i < detailLimit; i++) {
       const listing = results[i]!;
 
       // Try up to 2 attempts per detail page
+      let got403 = false;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const res = await fetch(listing.url, { headers: FETCH_HEADERS });
@@ -197,7 +199,15 @@ export async function scrapeCarsCom(): Promise<RawListing[]> {
             if (details.dealer && !listing.dealerName) listing.dealerName = details.dealer;
             if (details.location && !listing.dealerLocation) listing.dealerLocation = details.location;
             detailOk++;
+            consecutive403 = 0;
             break;
+          } else if (res.status === 403) {
+            got403 = true;
+            if (attempt === 0) {
+              await delay(5000 + Math.random() * 3000);
+            } else {
+              detailFail++;
+            }
           } else if (attempt === 0) {
             console.log(`[Cars.com] Detail ${i + 1}/${detailLimit} returned ${res.status}, retrying...`);
             await delay(5000 + Math.random() * 3000);
@@ -212,6 +222,14 @@ export async function scrapeCarsCom(): Promise<RawListing[]> {
             console.log(`[Cars.com] Detail ${i + 1}/${detailLimit} error: ${String(err).slice(0, 80)}`);
             detailFail++;
           }
+        }
+      }
+
+      if (got403) {
+        consecutive403++;
+        if (consecutive403 >= 3) {
+          console.log(`[Cars.com] 3 consecutive 403s on detail pages — rate limited, bailing`);
+          break;
         }
       }
 
