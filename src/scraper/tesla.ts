@@ -105,7 +105,10 @@ function parseItem(item: any): RawListing | null {
  * Scrapes Tesla's used Model X inventory using a Python subprocess
  * (nodriver / undetected Chrome) to bypass Akamai Bot Manager.
  */
-export async function scrapeTesla(): Promise<RawListing[]> {
+export async function scrapeTesla(
+  _onProgress?: (msg: string) => void,
+  onPartialResults?: (batch: RawListing[]) => void,
+): Promise<RawListing[]> {
   console.log("[Tesla] Launching Python scraper (nodriver)...");
 
   const proc = Bun.spawn(["python", FETCH_SCRIPT], {
@@ -115,56 +118,102 @@ export async function scrapeTesla(): Promise<RawListing[]> {
     env: { ...process.env },
   });
 
-  // 25s timeout — kill subprocess before the 30s refresh-level timeout
+  // 175s timeout — kill subprocess before the 180s refresh-level timeout
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     proc.kill();
-    console.error("[Tesla] Timed out after 25s — killed subprocess");
-  }, 25_000);
+    console.error("[Tesla] Timed out after 175s — killed subprocess");
+  }, 175_000);
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  // Incrementally collect results from per-page streaming markers
+  const results: RawListing[] = [];
 
+  // Stream stderr line-by-line for progress
+  const stderrReader = proc.stderr.getReader();
+  const stderrDecoder = new TextDecoder();
+  let stderrBuf = "";
+  const stderrDone = (async () => {
+    try {
+      while (true) {
+        const { done, value } = await stderrReader.read();
+        if (done) break;
+        stderrBuf += stderrDecoder.decode(value, { stream: true });
+        let nlIdx;
+        while ((nlIdx = stderrBuf.indexOf("\n")) !== -1) {
+          const line = stderrBuf.slice(0, nlIdx).trim();
+          stderrBuf = stderrBuf.slice(nlIdx + 1);
+          if (line) console.log(line);
+        }
+      }
+      if (stderrBuf.trim()) console.log(stderrBuf.trim());
+    } catch {}
+  })();
+
+  // Stream stdout and parse per-page results incrementally
+  const stdoutReader = proc.stdout.getReader();
+  const stdoutDecoder = new TextDecoder();
+  let stdoutBuf = "";
+  const PAGE_START = "__TESLA_PAGE_RESULTS__";
+  const PAGE_END = "__END_PAGE__";
+
+  const stdoutDone = (async () => {
+    try {
+      while (true) {
+        const { done, value } = await stdoutReader.read();
+        if (done) break;
+        stdoutBuf += stdoutDecoder.decode(value, { stream: true });
+
+        let startIdx: number;
+        while ((startIdx = stdoutBuf.indexOf(PAGE_START)) !== -1) {
+          const endIdx = stdoutBuf.indexOf(PAGE_END, startIdx);
+          if (endIdx === -1) break;
+
+          const jsonStr = stdoutBuf.slice(startIdx + PAGE_START.length, endIdx);
+          stdoutBuf = stdoutBuf.slice(endIdx + PAGE_END.length);
+
+          try {
+            const items: any[] = JSON.parse(jsonStr);
+            const batch: RawListing[] = [];
+            for (const item of items) {
+              const parsed = parseItem(item);
+              if (parsed) {
+                results.push(parsed);
+                batch.push(parsed);
+              }
+            }
+            if (batch.length > 0) onPartialResults?.(batch);
+          } catch (err) {
+            console.error("[Tesla] Failed to parse page results:", (err as Error).message);
+          }
+        }
+      }
+    } catch {}
+  })();
+
+  await Promise.all([stderrDone, stdoutDone]);
   await proc.exited;
   clearTimeout(timer);
 
-  if (timedOut) return [];
-
-  // Log stderr (contains progress messages from the Python script)
-  if (stderr.trim()) {
-    for (const line of stderr.trim().split("\n")) {
-      console.log(line);
-    }
+  if (timedOut) {
+    console.log(`[Tesla] Timed out but collected ${results.length} partial listings`);
+    return results;
   }
 
-  // Extract JSON results between markers
-  const startMarker = "__TESLA_RESULTS_START__";
-  const endMarker = "__TESLA_RESULTS_END__";
-  const startIdx = stdout.indexOf(startMarker);
-  const endIdx = stdout.indexOf(endMarker);
-
-  if (startIdx === -1 || endIdx === -1) {
-    console.error("[Tesla] No results markers found in output.");
-    return [];
-  }
-
-  const jsonStr = stdout.slice(startIdx + startMarker.length, endIdx).trim();
-
-  let items: any[];
-  try {
-    items = JSON.parse(jsonStr);
-  } catch (err) {
-    console.error("[Tesla] Failed to parse JSON results:", (err as Error).message);
-    return [];
-  }
-
-  const results: RawListing[] = [];
-  for (const item of items) {
-    const parsed = parseItem(item);
-    if (parsed) results.push(parsed);
+  // Fallback: check for final bulk marker
+  const FINAL_START = "__TESLA_RESULTS_START__";
+  const FINAL_END = "__TESLA_RESULTS_END__";
+  const finalStartIdx = stdoutBuf.indexOf(FINAL_START);
+  const finalEndIdx = stdoutBuf.indexOf(FINAL_END);
+  if (finalStartIdx !== -1 && finalEndIdx !== -1 && results.length === 0) {
+    try {
+      const jsonStr = stdoutBuf.slice(finalStartIdx + FINAL_START.length, finalEndIdx).trim();
+      const items: any[] = JSON.parse(jsonStr);
+      for (const item of items) {
+        const parsed = parseItem(item);
+        if (parsed) results.push(parsed);
+      }
+    } catch {}
   }
 
   if (results.length === 0) {

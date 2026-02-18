@@ -76,7 +76,8 @@ function parseItem(item: any): RawListing | null {
  * Extracts rich data from __PRELOADED_STATE__ across paginated results.
  */
 export async function scrapeEdmunds(
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  onPartialResults?: (batch: RawListing[]) => void,
 ): Promise<RawListing[]> {
   const msg = "[Edmunds] Launching Python scraper (nodriver)...";
   console.log(msg);
@@ -89,26 +90,29 @@ export async function scrapeEdmunds(
     env: { ...process.env },
   });
 
-  // 25s timeout — kill subprocess before the 30s refresh-level timeout hits
+  // 175s timeout — kill subprocess before the 180s refresh-level timeout hits
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     proc.kill();
-    const tmsg = "[Edmunds] Timed out after 25 seconds — killed subprocess";
+    const tmsg = "[Edmunds] Timed out after 175s — killed subprocess";
     console.error(tmsg);
     onProgress?.(tmsg);
-  }, 25_000);
+  }, 175_000);
+
+  // Incrementally collect results from per-page streaming markers
+  const results: RawListing[] = [];
 
   // Stream stderr line-by-line for real-time progress
   const stderrReader = proc.stderr.getReader();
-  const decoder = new TextDecoder();
+  const stderrDecoder = new TextDecoder();
   let stderrBuf = "";
   const stderrDone = (async () => {
     try {
       while (true) {
         const { done, value } = await stderrReader.read();
         if (done) break;
-        stderrBuf += decoder.decode(value, { stream: true });
+        stderrBuf += stderrDecoder.decode(value, { stream: true });
         let nlIdx;
         while ((nlIdx = stderrBuf.indexOf("\n")) !== -1) {
           const line = stderrBuf.slice(0, nlIdx).trim();
@@ -126,38 +130,75 @@ export async function scrapeEdmunds(
     } catch {}
   })();
 
-  const stdout = await new Response(proc.stdout).text();
-  await stderrDone;
+  // Stream stdout and parse per-page results incrementally
+  const stdoutReader = proc.stdout.getReader();
+  const stdoutDecoder = new TextDecoder();
+  let stdoutBuf = "";
+  const PAGE_START = "__EDMUNDS_PAGE_RESULTS__";
+  const PAGE_END = "__END_PAGE__";
+
+  const stdoutDone = (async () => {
+    try {
+      while (true) {
+        const { done, value } = await stdoutReader.read();
+        if (done) break;
+        stdoutBuf += stdoutDecoder.decode(value, { stream: true });
+
+        // Parse all complete page markers in the buffer
+        let startIdx: number;
+        while ((startIdx = stdoutBuf.indexOf(PAGE_START)) !== -1) {
+          const endIdx = stdoutBuf.indexOf(PAGE_END, startIdx);
+          if (endIdx === -1) break; // incomplete page, wait for more data
+
+          const jsonStr = stdoutBuf.slice(startIdx + PAGE_START.length, endIdx);
+          stdoutBuf = stdoutBuf.slice(endIdx + PAGE_END.length);
+
+          try {
+            const items: any[] = JSON.parse(jsonStr);
+            const batch: RawListing[] = [];
+            for (const item of items) {
+              const parsed = parseItem(item);
+              if (parsed) {
+                results.push(parsed);
+                batch.push(parsed);
+              }
+            }
+            if (batch.length > 0) onPartialResults?.(batch);
+            onProgress?.(`[Edmunds] Streaming: ${results.length} listings so far`);
+          } catch (err) {
+            console.error("[Edmunds] Failed to parse page results:", (err as Error).message);
+          }
+        }
+      }
+    } catch {}
+  })();
+
+  await Promise.all([stderrDone, stdoutDone]);
   await proc.exited;
   clearTimeout(timer);
 
-  if (timedOut) return [];
-
-  // Extract JSON results between markers
-  const startMarker = "__EDMUNDS_RESULTS_START__";
-  const endMarker = "__EDMUNDS_RESULTS_END__";
-  const startIdx = stdout.indexOf(startMarker);
-  const endIdx = stdout.indexOf(endMarker);
-
-  if (startIdx === -1 || endIdx === -1) {
-    console.error("[Edmunds] No results markers found in output.");
-    return [];
+  if (timedOut) {
+    console.log(`[Edmunds] Timed out but collected ${results.length} partial listings`);
+    return results; // return whatever we got before timeout
   }
 
-  const jsonStr = stdout.slice(startIdx + startMarker.length, endIdx).trim();
-
-  let items: any[];
-  try {
-    items = JSON.parse(jsonStr);
-  } catch (err) {
-    console.error("[Edmunds] Failed to parse JSON results:", (err as Error).message);
-    return [];
-  }
-
-  const results: RawListing[] = [];
-  for (const item of items) {
-    const parsed = parseItem(item);
-    if (parsed) results.push(parsed);
+  // Also check for the final bulk marker (backward compat)
+  const FINAL_START = "__EDMUNDS_RESULTS_START__";
+  const FINAL_END = "__EDMUNDS_RESULTS_END__";
+  const finalStartIdx = stdoutBuf.indexOf(FINAL_START);
+  const finalEndIdx = stdoutBuf.indexOf(FINAL_END);
+  if (finalStartIdx !== -1 && finalEndIdx !== -1) {
+    try {
+      const jsonStr = stdoutBuf.slice(finalStartIdx + FINAL_START.length, finalEndIdx).trim();
+      const items: any[] = JSON.parse(jsonStr);
+      // Only use final results if streaming yielded nothing (fallback)
+      if (results.length === 0) {
+        for (const item of items) {
+          const parsed = parseItem(item);
+          if (parsed) results.push(parsed);
+        }
+      }
+    } catch {}
   }
 
   if (results.length === 0) {

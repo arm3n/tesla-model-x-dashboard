@@ -154,7 +154,8 @@ async def human_scroll(page):
 
 
 async def extract_page_data(page, page_num, all_items, seen_vins):
-    """Extract listing data from __PRELOADED_STATE__ on current page."""
+    """Extract listing data from __PRELOADED_STATE__ on current page.
+    Emits per-page results to stdout immediately for partial streaming."""
     result = await page.evaluate(EXTRACT_STATE_JS)
     if not result:
         print(f"[Edmunds] No state on page {page_num}", file=sys.stderr)
@@ -177,14 +178,19 @@ async def extract_page_data(page, page_num, all_items, seen_vins):
         else:
             print(f"[Edmunds] DEBUG no photos found in tried paths", file=sys.stderr)
 
-    new_count = 0
+    new_items = []
     for item in items:
         if item["vin"] not in seen_vins:
             seen_vins.add(item["vin"])
             all_items.append(item)
-            new_count += 1
+            new_items.append(item)
 
-    return {"total_pages": total_pages, "total_count": total_count, "new": new_count}
+    # Emit this page's results immediately for partial streaming
+    if new_items:
+        print("__EDMUNDS_PAGE_RESULTS__" + json.dumps(new_items) + "__END_PAGE__")
+        sys.stdout.flush()
+
+    return {"total_pages": total_pages, "total_count": total_count, "new": len(new_items)}
 
 
 async def main():

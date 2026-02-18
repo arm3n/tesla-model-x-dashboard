@@ -122,6 +122,11 @@ async def main():
             break
 
         all_listings.extend(results)
+
+        # Emit per-page results immediately for partial streaming
+        print("__TESLA_PAGE_RESULTS__" + json.dumps(results) + "__END_PAGE__")
+        sys.stdout.flush()
+
         print(
             f"[Tesla] Fetched offset {offset}: {len(results)} items "
             f"(total collected: {len(all_listings)}/{total})",

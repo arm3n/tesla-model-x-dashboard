@@ -90,7 +90,7 @@
       background: #0d1117;
       border-bottom: 1px solid #30363d;
       padding: 12px 24px;
-      max-height: 180px;
+      max-height: 320px;
       overflow: hidden;
     }
 
@@ -108,12 +108,40 @@
       color: #58a6ff;
     }
 
+    .scraper-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      margin-bottom: 8px;
+    }
+    .scraper-table th {
+      text-align: left;
+      color: #484f58;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.5px;
+      padding: 3px 8px;
+      border-bottom: 1px solid #21262d;
+    }
+    .scraper-table td {
+      padding: 3px 8px;
+      color: #c9d1d9;
+      border-bottom: 1px solid #161b22;
+    }
+    .scraper-table .st-icon { width: 20px; text-align: center; }
+    .scraper-table .st-name { }
+    .scraper-table .st-count { text-align: right; color: #f0f6fc; font-weight: 600; }
+    .scraper-table .st-time { text-align: right; color: #8b949e; }
+    .scraper-table .st-msg { color: #8b949e; font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
     .progress-log {
       font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
       font-size: 12px;
       line-height: 1.6;
       color: #8b949e;
-      max-height: 130px;
+      max-height: 100px;
       overflow-y: auto;
     }
 
@@ -142,7 +170,7 @@
     }
 
     .grid-container.with-progress {
-      height: calc(100vh - 285px);
+      height: calc(100vh - 425px);
     }
 
     /* AG Grid dark theme overrides */
@@ -513,6 +541,18 @@
       <span class="spinner spinner-sm" id="progressSpinner"></span>
       <span id="progressTitle">Refreshing data...</span>
     </div>
+    <table class="scraper-table" id="scraperTable" style="display:none;">
+      <thead>
+        <tr>
+          <th class="st-icon"></th>
+          <th class="st-name">Source</th>
+          <th class="st-count">Listings</th>
+          <th class="st-time">Time</th>
+          <th class="st-msg">Status</th>
+        </tr>
+      </thead>
+      <tbody id="scraperTableBody"></tbody>
+    </table>
     <div class="progress-log" id="progressLog"></div>
   </div>
   <div class="logs-panel" id="logsPanel">
@@ -995,6 +1035,41 @@
       }
     }
 
+    function renderScraperTable(scrapers) {
+      if (!scrapers || Object.keys(scrapers).length === 0) {
+        document.getElementById('scraperTable').style.display = 'none';
+        return;
+      }
+      document.getElementById('scraperTable').style.display = '';
+      const tbody = document.getElementById('scraperTableBody');
+      const now = Date.now();
+      const rows = Object.entries(scrapers).map(([name, s]) => {
+        const icons = {
+          pending: '<span style="color:#484f58">&#9679;</span>',
+          running: '<span class="spinner spinner-sm"></span>',
+          done: '<span style="color:#3fb950">&#10003;</span>',
+          timeout: '<span style="color:#d29922">&#9888;</span>',
+          error: '<span style="color:#f85149">&#10007;</span>',
+        };
+        const icon = icons[s.status] || icons.pending;
+        const elapsed = s.finishedAt
+          ? ((s.finishedAt - s.startedAt) / 1000).toFixed(1) + 's'
+          : s.startedAt && s.status === 'running'
+            ? ((now - s.startedAt) / 1000).toFixed(0) + 's...'
+            : '--';
+        const countStr = s.count > 0 ? String(s.count) : (s.status === 'running' ? '...' : '0');
+        const msg = s.message ? escHtml(s.message.replace(/^\[.*?\]\s*/, '').slice(0, 60)) : '';
+        return `<tr>
+          <td class="st-icon">${icon}</td>
+          <td class="st-name">${escHtml(name)}</td>
+          <td class="st-count">${countStr}</td>
+          <td class="st-time">${elapsed}</td>
+          <td class="st-msg">${msg}</td>
+        </tr>`;
+      });
+      tbody.innerHTML = rows.join('');
+    }
+
     async function pollProgress() {
       try {
         const res = await fetch('/api/refresh/progress?since=' + (lastPollTime - 1000));
@@ -1006,6 +1081,9 @@
             lastPollTime = entry.time;
           }
         }
+
+        // Update per-scraper status table
+        renderScraperTable(data.scrapers);
 
         if (!data.inProgress) {
           const btn = document.getElementById('refreshBtn');
@@ -1678,8 +1756,12 @@
               </div>`;
 
           for (const e of entries) {
-            const statusCls = e.status === 'success' ? (e.rawCount > 0 ? 'log-ok' : 'log-zero') : 'log-err';
-            const statusLabel = e.status === 'success' ? (e.rawCount > 0 ? 'OK' : 'OK (0)') : 'ERROR';
+            const statusCls = e.status === 'timeout' ? 'log-err'
+              : e.status === 'success' ? (e.rawCount > 0 ? 'log-ok' : 'log-zero')
+              : 'log-err';
+            const statusLabel = e.status === 'timeout' ? `TIMEOUT (${e.rawCount})`
+              : e.status === 'success' ? (e.rawCount > 0 ? 'OK' : 'OK (0)')
+              : 'ERROR';
             const durStr = (e.durationMs / 1000).toFixed(1) + 's';
             const errStr = e.errorMessage ? `<span class="log-error-msg">${escHtml(e.errorMessage.slice(0, 200))}</span>` : '';
 

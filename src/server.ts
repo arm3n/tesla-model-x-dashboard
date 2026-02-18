@@ -1,21 +1,33 @@
 import { resolve } from "path";
 import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, updateListingFields, removeListingOverrides, getListingOverrides, getEnrichmentMap } from "./db.ts";
 import { refresh, refreshVins } from "../scripts/refresh.ts";
+import type { ScraperStatus } from "../scripts/refresh.ts";
 import { runEnrichment, runEnrichmentForVins } from "./scraper/enrich.ts";
 
 const PUBLIC_DIR = resolve(import.meta.dir, "../public");
-const PORT = 3000;
+const PORT = parseInt(process.env.PORT || "3000", 10);
 
 let refreshInProgress = false;
 let refreshLog: { time: number; msg: string; type: string }[] = [];
 let refreshSeq = 0;
+let scraperStatuses: Record<string, ScraperStatus> = {};
 
 function logProgress(msg: string, type: string = "info") {
   refreshLog.push({ time: Date.now(), msg, type });
 }
 
+function updateScraperStatus(name: string, status: ScraperStatus) {
+  // Preserve startedAt from initial "running" update
+  const existing = scraperStatuses[name];
+  if (existing && status.startedAt === 0) {
+    status.startedAt = existing.startedAt;
+  }
+  scraperStatuses[name] = status;
+}
+
 const server = Bun.serve({
   port: PORT,
+  reusePort: true,
   async fetch(req) {
     const url = new URL(req.url);
 
@@ -47,6 +59,7 @@ const server = Bun.serve({
         inProgress: refreshInProgress,
         seq: refreshSeq,
         entries: newEntries,
+        scrapers: scraperStatuses,
       });
     }
 
@@ -292,6 +305,7 @@ const server = Bun.serve({
       refreshInProgress = true;
       refreshLog = [];
       refreshSeq++;
+      scraperStatuses = {};
 
       if (vins) {
         // Per-VIN re-scrape mode (fast — skips full pagination)
@@ -313,7 +327,7 @@ const server = Bun.serve({
         const label = sources ? sources.join(", ") : "all sources";
         logProgress(`Starting data refresh (${label})...`);
 
-        refresh((msg) => logProgress(msg), sources)
+        refresh((msg) => logProgress(msg), sources, updateScraperStatus)
           .then((stats) => {
             logProgress(
               `Done! ${stats.filtered} filtered listings (${stats.total} total)`,

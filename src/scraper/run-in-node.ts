@@ -28,13 +28,13 @@ export async function runScraperInNode(
     env: { ...process.env },
   });
 
-  // 25s timeout — kill subprocess before the 30s refresh-level timeout
+  // 55s timeout — kill subprocess before the 60s refresh-level timeout
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     proc.kill();
-    console.error(`[${scraperName}] Timed out after 25s — killed subprocess`);
-  }, 25_000);
+    console.error(`[${scraperName}] Timed out after 55s — killed subprocess`);
+  }, 55_000);
 
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),

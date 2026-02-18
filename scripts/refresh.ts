@@ -19,6 +19,15 @@ import {
 import type { RawListing } from "../src/scraper/types.ts";
 
 export type ProgressCallback = (msg: string) => void;
+export type ScraperStatusCallback = (name: string, status: ScraperStatus) => void;
+
+export interface ScraperStatus {
+  status: "pending" | "running" | "done" | "timeout" | "error";
+  count: number;
+  startedAt: number;
+  finishedAt?: number;
+  message?: string;
+}
 
 export interface RefreshStats {
   marketcheck: number;
@@ -37,19 +46,20 @@ export interface RefreshStats {
 interface ScraperDef {
   name: string;
   key: keyof Omit<RefreshStats, "total" | "filtered">;
-  fn: (onProgress?: ProgressCallback) => Promise<RawListing[]>;
+  fn: (onProgress?: ProgressCallback, onPartialResults?: (batch: RawListing[]) => void) => Promise<RawListing[]>;
+  timeout: number; // ms — per-scraper timeout ceiling
 }
 
 const SCRAPERS: ScraperDef[] = [
-  { name: "Tesla Inventory", key: "tesla", fn: scrapeTesla },
-  { name: "MarketCheck", key: "marketcheck", fn: scrapeMarketCheck },
-  { name: "Auto.dev", key: "autoDev", fn: scrapeAutoDev },
-  { name: "Autotrader", key: "autotrader", fn: scrapeAutotrader },
-  { name: "TrueCar", key: "truecar", fn: scrapeTrueCar },
-  { name: "Edmunds", key: "edmunds", fn: scrapeEdmunds },
-  { name: "eBay Motors", key: "ebay", fn: scrapeEbayMotors },
-  { name: "Cars.com", key: "carsCom", fn: scrapeCarsCom },
-  { name: "CarGurus", key: "carGurus", fn: scrapeCarGurus },
+  { name: "Tesla Inventory", key: "tesla", fn: scrapeTesla, timeout: 180_000 },
+  { name: "MarketCheck", key: "marketcheck", fn: scrapeMarketCheck, timeout: 30_000 },
+  { name: "Auto.dev", key: "autoDev", fn: scrapeAutoDev, timeout: 180_000 },
+  { name: "Autotrader", key: "autotrader", fn: scrapeAutotrader, timeout: 180_000 },
+  { name: "TrueCar", key: "truecar", fn: scrapeTrueCar, timeout: 60_000 },
+  { name: "Edmunds", key: "edmunds", fn: scrapeEdmunds, timeout: 180_000 },
+  { name: "eBay Motors", key: "ebay", fn: scrapeEbayMotors, timeout: 30_000 },
+  { name: "Cars.com", key: "carsCom", fn: scrapeCarsCom, timeout: 60_000 },
+  { name: "CarGurus", key: "carGurus", fn: scrapeCarGurus, timeout: 30_000 },
 ];
 
 /** Map from source key/name to the scraper key used in SCRAPERS */
@@ -69,7 +79,8 @@ const SOURCE_KEY_MAP: Record<string, string> = {
 
 export async function refresh(
   onProgress?: ProgressCallback,
-  onlySources?: string[]
+  onlySources?: string[],
+  onScraperStatus?: ScraperStatusCallback,
 ): Promise<RefreshStats> {
   const log = (msg: string) => {
     console.log(msg);
@@ -91,21 +102,53 @@ export async function refresh(
 
   const refreshId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+  // Initialize scraper status
   for (const s of activescrapers) {
     log(`Fetching from ${s.name}...`);
+    onScraperStatus?.(s.name, { status: "pending", count: 0, startedAt: Date.now() });
   }
 
-  // Run scrapers with per-source timing and 30s timeout per scraper
-  const SCRAPER_TIMEOUT_MS = 30_000;
+  // Run scrapers with per-source timing and per-scraper timeout
 
-  function withTimeout<T>(promise: Promise<T>, name: string, ms: number): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
+  // Shared mutable array pattern: each scraper pushes results incrementally.
+  // On timeout, withTimeout returns whatever partial results have been collected.
+  function withTimeout(
+    runScraper: (partialResults: RawListing[]) => Promise<RawListing[]>,
+    name: string,
+    ms: number,
+  ): Promise<{ results: RawListing[]; timedOut: boolean; endMs: number }> {
+    const partialResults: RawListing[] = [];
+    return new Promise((resolve) => {
+      let settled = false;
       const timer = setTimeout(() => {
-        reject(new Error(`${name} timed out after ${ms / 1000}s`));
+        if (!settled) {
+          settled = true;
+          const endMs = Date.now();
+          log(`[${name}] Timed out after ${ms / 1000}s — returning ${partialResults.length} partial results`);
+          onScraperStatus?.(name, { status: "timeout", count: partialResults.length, startedAt: 0, finishedAt: endMs, message: `Timed out after ${ms / 1000}s` });
+          resolve({ results: [...partialResults], timedOut: true, endMs });
+        }
       }, ms);
-      promise.then(
-        (val) => { clearTimeout(timer); resolve(val); },
-        (err) => { clearTimeout(timer); reject(err); },
+      runScraper(partialResults).then(
+        (val) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            const endMs = Date.now();
+            onScraperStatus?.(name, { status: "done", count: val.length, startedAt: 0, finishedAt: endMs });
+            resolve({ results: val, timedOut: false, endMs });
+          }
+        },
+        (err) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            const endMs = Date.now();
+            log(`[${name}] Error: ${String(err).slice(0, 200)}`);
+            onScraperStatus?.(name, { status: "error", count: partialResults.length, startedAt: 0, finishedAt: endMs, message: String(err).slice(0, 200) });
+            resolve({ results: [...partialResults], timedOut: false, endMs });
+          }
+        },
       );
     });
   }
@@ -114,19 +157,32 @@ export async function refresh(
     activescrapers.map((s) => ({ scraper: s, startMs: Date.now() }));
 
   const results = await Promise.allSettled(
-    scraperTimings.map(({ scraper }) =>
-      withTimeout(
-        scraper.fn(log).then((r) => {
+    scraperTimings.map(({ scraper }) => {
+      onScraperStatus?.(scraper.name, { status: "running", count: 0, startedAt: Date.now() });
+      return withTimeout(
+        async (partialResults) => {
+          const r = await scraper.fn(
+            (msg) => {
+              log(msg);
+              onScraperStatus?.(scraper.name, { status: "running", count: partialResults.length, startedAt: 0, message: msg });
+            },
+            (batch) => {
+              // Push streaming results into shared array as they arrive (timeout safety)
+              partialResults.push(...batch);
+              onScraperStatus?.(scraper.name, { status: "running", count: partialResults.length, startedAt: 0 });
+            },
+          );
+          // Push remaining results that weren't streamed (fetch-based scrapers)
+          if (partialResults.length === 0) {
+            partialResults.push(...r);
+          }
           log(`${scraper.name}: ${r.length} listings found`);
           return r;
-        }),
+        },
         scraper.name,
-        SCRAPER_TIMEOUT_MS,
-      ).catch((err) => {
-        log(`[${scraper.name}] ${err.message}`);
-        return [] as RawListing[];
-      })
-    )
+        scraper.timeout,
+      );
+    })
   );
 
   const stats: RefreshStats = {
@@ -144,22 +200,28 @@ export async function refresh(
   };
 
   const allRaw: RawListing[] = [];
-  const rawByScraper: { scraper: ScraperDef; raw: RawListing[]; durationMs: number; error?: string }[] = [];
+  const rawByScraper: { scraper: ScraperDef; raw: RawListing[]; durationMs: number; status: "success" | "timeout" | "error"; error?: string }[] = [];
 
-  const now = Date.now();
   for (let i = 0; i < scraperTimings.length; i++) {
     const result = results[i]!;
     const { scraper, startMs } = scraperTimings[i]!;
-    const durationMs = now - startMs;
 
     if (result.status === "fulfilled") {
-      stats[scraper.key] = result.value.length;
-      allRaw.push(...result.value);
-      rawByScraper.push({ scraper, raw: result.value, durationMs });
+      const { results: scraperResults, timedOut, endMs } = result.value;
+      const durationMs = endMs - startMs;
+      stats[scraper.key] = scraperResults.length;
+      allRaw.push(...scraperResults);
+      rawByScraper.push({
+        scraper,
+        raw: scraperResults,
+        durationMs,
+        status: timedOut ? "timeout" : "success",
+      });
     } else {
+      const durationMs = Date.now() - startMs;
       const errMsg = String(result.reason).slice(0, 500);
       log(`${scraper.name} failed: ${errMsg.slice(0, 100)}`);
-      rawByScraper.push({ scraper, raw: [], durationMs, error: errMsg });
+      rawByScraper.push({ scraper, raw: [], durationMs, status: "error", error: errMsg });
     }
   }
 
@@ -210,11 +272,11 @@ export async function refresh(
     insertScraperLog({
       refreshId,
       source: entry.scraper.name,
-      status: entry.error ? "error" : "success",
+      status: entry.status,
       rawCount: entry.raw.length,
       dedupedCount: dedupBySource[sourceName] || 0,
       filteredCount: filtBySource[sourceName] || 0,
-      errorMessage: entry.error || null,
+      errorMessage: entry.error || (entry.status === "timeout" ? `Timed out after ${entry.scraper.timeout / 1000}s` : null),
       durationMs: entry.durationMs,
       timestamp: ts,
     });
