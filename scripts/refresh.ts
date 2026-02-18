@@ -95,15 +95,36 @@ export async function refresh(
     log(`Fetching from ${s.name}...`);
   }
 
-  // Run scrapers with per-source timing
+  // Run scrapers with per-source timing and 30s timeout per scraper
+  const SCRAPER_TIMEOUT_MS = 30_000;
+
+  function withTimeout<T>(promise: Promise<T>, name: string, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`${name} timed out after ${ms / 1000}s`));
+      }, ms);
+      promise.then(
+        (val) => { clearTimeout(timer); resolve(val); },
+        (err) => { clearTimeout(timer); reject(err); },
+      );
+    });
+  }
+
   const scraperTimings: { scraper: ScraperDef; startMs: number }[] =
     activescrapers.map((s) => ({ scraper: s, startMs: Date.now() }));
 
   const results = await Promise.allSettled(
     scraperTimings.map(({ scraper }) =>
-      scraper.fn(log).then((r) => {
-        log(`${scraper.name}: ${r.length} listings found`);
-        return r;
+      withTimeout(
+        scraper.fn(log).then((r) => {
+          log(`${scraper.name}: ${r.length} listings found`);
+          return r;
+        }),
+        scraper.name,
+        SCRAPER_TIMEOUT_MS,
+      ).catch((err) => {
+        log(`[${scraper.name}] ${err.message}`);
+        return [] as RawListing[];
       })
     )
   );
@@ -151,7 +172,7 @@ export async function refresh(
 
   const filtered = filterListings(normalized);
   stats.filtered = filtered.length;
-  log(`${filtered.length} listings match filters (HW4 + non-black + 6-seat + clean title + no accidents)`);
+  log(`${filtered.length} listings match filters (HW4 + 6-seat + clean title + no accidents)`);
 
   log("Saving to database...");
   upsertListings(normalized);

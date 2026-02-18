@@ -89,15 +89,15 @@ export async function scrapeEdmunds(
     env: { ...process.env },
   });
 
-  // 3-minute timeout — kill subprocess if it hangs
+  // 25s timeout — kill subprocess before the 30s refresh-level timeout hits
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     proc.kill();
-    const tmsg = "[Edmunds] Timed out after 3 minutes — killed subprocess";
+    const tmsg = "[Edmunds] Timed out after 25 seconds — killed subprocess";
     console.error(tmsg);
     onProgress?.(tmsg);
-  }, 180_000);
+  }, 25_000);
 
   // Stream stderr line-by-line for real-time progress
   const stderrReader = proc.stderr.getReader();

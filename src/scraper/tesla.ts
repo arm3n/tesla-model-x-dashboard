@@ -115,12 +115,23 @@ export async function scrapeTesla(): Promise<RawListing[]> {
     env: { ...process.env },
   });
 
+  // 25s timeout — kill subprocess before the 30s refresh-level timeout
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+    console.error("[Tesla] Timed out after 25s — killed subprocess");
+  }, 25_000);
+
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
 
   await proc.exited;
+  clearTimeout(timer);
+
+  if (timedOut) return [];
 
   // Log stderr (contains progress messages from the Python script)
   if (stderr.trim()) {
