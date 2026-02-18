@@ -81,13 +81,13 @@ async function findDealerDomain(dealerName: string, dealerLocation: string): Pro
   return null;
 }
 
-/** Search Brave for a VIN on a specific dealer domain — returns the detail page URL if found */
-async function findVinOnDealerSite(dealerDomain: string, vin: string): Promise<string | null> {
-  if (!BRAVE_API_KEY) return null;
+/** Search Brave for a VIN on a specific dealer domain — returns ALL matching URLs (best first) */
+async function findVinUrlsOnDealerSite(dealerDomain: string, vin: string): Promise<string[]> {
+  if (!BRAVE_API_KEY) return [];
 
   const host = new URL(dealerDomain).hostname;
   const query = encodeURIComponent(`${vin} site:${host}`);
-  const url = `https://api.search.brave.com/res/v1/web/search?q=${query}&count=3`;
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${query}&count=5`;
 
   try {
     const resp = await fetch(url, {
@@ -98,20 +98,27 @@ async function findVinOnDealerSite(dealerDomain: string, vin: string): Promise<s
       signal: AbortSignal.timeout(10000),
     });
 
-    if (!resp.ok) return null;
+    if (!resp.ok) return [];
 
     const data = await resp.json() as any;
     const results = data?.web?.results || [];
 
+    const urls: string[] = [];
     for (const r of results) {
-      // Return the first result on the dealer domain that mentions the VIN
       if (r.url && r.url.includes(host)) {
-        return r.url;
+        urls.push(r.url);
       }
     }
+    // Prioritize VDP-looking URLs over index/search pages
+    urls.sort((a, b) => {
+      const aVdp = isVdpCandidate(a) ? 0 : 1;
+      const bVdp = isVdpCandidate(b) ? 0 : 1;
+      return aVdp - bVdp;
+    });
+    return urls;
   } catch {}
 
-  return null;
+  return [];
 }
 
 /** Fetch a URL using curl subprocess (avoids Bun's TLS fingerprint triggering WAFs) */
@@ -133,8 +140,9 @@ async function curlFetch(url: string): Promise<string | null> {
 
 /** Try common dealer site search URL patterns to find a VIN */
 async function searchDealerSite(dealerDomain: string, vin: string): Promise<string | null> {
-  // Common DMS search patterns
+  // Common DMS search patterns (DealerSocket/Dealer.com uses /used-inventory/index.htm?search=)
   const patterns = [
+    `${dealerDomain}/used-inventory/index.htm?search=${vin}`,
     `${dealerDomain}/search/?q=${vin}`,
     `${dealerDomain}/inventory/?q=${vin}`,
     `${dealerDomain}/vehicles/?search=${vin}`,
@@ -407,45 +415,55 @@ async function enrichSingleVin(
 
   log(`[enrich] ${c.vin}: dealer site → ${dealerDomain}`);
 
-  // Step 2a: Search Brave for VIN on the dealer's domain (finds the exact VDP URL)
-  let html: string | null = null;
-  let pageUrl = `${dealerDomain}/search/?q=${c.vin}`;
-
-  const vinPageUrl = await findVinOnDealerSite(dealerDomain, c.vin);
+  // Step 2a: Search Brave for VIN on the dealer's domain (returns multiple URLs, VDP-like first)
+  const vinUrls = await findVinUrlsOnDealerSite(dealerDomain, c.vin);
   await sleep(BRAVE_DELAY_MS);
 
-  if (vinPageUrl) {
-    log(`[enrich] ${c.vin}: found VDP via Brave → ${vinPageUrl}`);
-    html = await curlFetch(vinPageUrl);
-    if (html) pageUrl = vinPageUrl;
-    await sleep(FETCH_DELAY_MS);
-  }
+  let data: EnrichmentData | null = null;
 
-  // Step 2b: Fall back to DMS search patterns if Brave didn't find the VDP
-  if (!html || !html.includes(c.vin)) {
-    const searchHtml = await searchDealerSite(dealerDomain, c.vin);
-    if (searchHtml) {
-      html = searchHtml;
-      pageUrl = `${dealerDomain}/search/?q=${c.vin}`;
+  // Step 2b: Try each Brave result URL — VDP-like URLs are tried first
+  for (const vinUrl of vinUrls) {
+    log(`[enrich] ${c.vin}: trying Brave result → ${vinUrl}`);
+    const html = await curlFetch(vinUrl);
+    await sleep(FETCH_DELAY_MS);
+    if (!html) continue;
+
+    const hasVin = html.includes(c.vin);
+
+    // Only trust parsed data if the page actually mentions this VIN
+    // (prevents false matches from regex on generic inventory pages)
+    if (hasVin) {
+      data = parseDealerHtml(html, c.vin, vinUrl);
+      if (data) break;
+    }
+
+    // If page has the VIN but no structured data, try following VDP links
+    if (hasVin) {
+      log(`[enrich] ${c.vin}: page has VIN but no data, following VDP link...`);
+      const vdp = await followVdpLink(html, c.vin, dealerDomain);
+      if (vdp) {
+        log(`[enrich] ${c.vin}: followed VDP → ${vdp.url}`);
+        data = parseDealerHtml(vdp.html, c.vin, vdp.url);
+        if (data) break;
+      }
     }
   }
 
-  if (!html) {
-    log(`[enrich] ${c.vin}: VIN not found on dealer site`);
-    saveEnrichment(c.vin, {});
-    return false;
-  }
+  // Step 2c: Fall back to DMS search patterns if Brave URLs didn't yield data
+  if (!data) {
+    const searchHtml = await searchDealerSite(dealerDomain, c.vin);
+    if (searchHtml) {
+      data = parseDealerHtml(searchHtml, c.vin, `${dealerDomain}/used-inventory/index.htm?search=${c.vin}`);
 
-  // Step 3: Parse vehicle data
-  let data = parseDealerHtml(html, c.vin, pageUrl);
-
-  // Step 3b: If no structured data, try following VDP links from the page
-  if (!data && html.includes(c.vin)) {
-    log(`[enrich] ${c.vin}: no structured data on search page, following VDP link...`);
-    const vdp = await followVdpLink(html, c.vin, dealerDomain);
-    if (vdp) {
-      log(`[enrich] ${c.vin}: followed VDP → ${vdp.url}`);
-      data = parseDealerHtml(vdp.html, c.vin, vdp.url);
+      // If search page has VIN but no data, try following VDP links
+      if (!data && searchHtml.includes(c.vin)) {
+        log(`[enrich] ${c.vin}: search page has VIN, following VDP link...`);
+        const vdp = await followVdpLink(searchHtml, c.vin, dealerDomain);
+        if (vdp) {
+          log(`[enrich] ${c.vin}: followed VDP → ${vdp.url}`);
+          data = parseDealerHtml(vdp.html, c.vin, vdp.url);
+        }
+      }
     }
   }
 
