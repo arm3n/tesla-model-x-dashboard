@@ -27,7 +27,6 @@ function updateScraperStatus(name: string, status: ScraperStatus) {
 
 const server = Bun.serve({
   port: PORT,
-  reusePort: true,
   async fetch(req) {
     const url = new URL(req.url);
 
