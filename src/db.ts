@@ -341,6 +341,8 @@ export function getFilteredListings(): (Listing & { isFavorite: boolean })[] {
       AND (l.interiorColor IS NULL OR LOWER(l.interiorColor) LIKE '%white%'
            OR LOWER(l.interiorColor) NOT LIKE '%black%')
       AND (l.seatCount = 6 OR l.seatCount IS NULL)
+      AND (l.trim = 'Plaid' OR l.trim IS NULL OR l.trim = '')
+      AND l.price <= 85000
       AND (l.titleStatus IS NULL OR LOWER(l.titleStatus) NOT IN ('salvage', 'rebuilt', 'flood', 'lemon', 'junk', 'branded'))
       AND l.accidentHistory != 'accident'
       AND l.mileage <= 50000

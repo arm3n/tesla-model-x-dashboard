@@ -208,6 +208,12 @@ export function filterListings(listings: Listing[]): Listing[] {
     // Filter out salvage/lemon/branded titles
     if (isBadTitle(l.titleStatus)) return false;
 
+    // Plaid trim only (VIN-decoded; keep unknowns)
+    if (l.trim && l.trim !== "Plaid") return false;
+
+    // Max price $85k
+    if (l.price > 85_000) return false;
+
     // Filter out vehicles with known accidents
     if (l.accidentHistory === "accident") return false;
 
