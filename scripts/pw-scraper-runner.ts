@@ -24,9 +24,9 @@ async function run() {
       break;
     }
     case "cars.com": {
-      // Cars.com now uses direct fetch, no Playwright needed
-      const { scrapeCarsCom } = await import("../src/scraper/cars-com.ts");
-      results = await scrapeCarsCom();
+      // Cars.com now uses nodriver (Python) — not run via this Node.js runner
+      console.error("[cars.com] This scraper uses nodriver directly, not the Node.js runner");
+      results = [];
       break;
     }
     case "cargurus": {

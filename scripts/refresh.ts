@@ -58,7 +58,7 @@ const SCRAPERS: ScraperDef[] = [
   { name: "TrueCar", key: "truecar", fn: scrapeTrueCar, timeout: 60_000 },
   { name: "Edmunds", key: "edmunds", fn: scrapeEdmunds, timeout: 180_000 },
   { name: "eBay Motors", key: "ebay", fn: scrapeEbayMotors, timeout: 30_000 },
-  { name: "Cars.com", key: "carsCom", fn: scrapeCarsCom, timeout: 60_000 },
+  { name: "Cars.com", key: "carsCom", fn: scrapeCarsCom, timeout: 180_000 },
   { name: "CarGurus", key: "carGurus", fn: scrapeCarGurus, timeout: 30_000 },
 ];
 
