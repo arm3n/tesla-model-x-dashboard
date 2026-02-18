@@ -81,6 +81,39 @@ async function findDealerDomain(dealerName: string, dealerLocation: string): Pro
   return null;
 }
 
+/** Search Brave for a VIN on a specific dealer domain — returns the detail page URL if found */
+async function findVinOnDealerSite(dealerDomain: string, vin: string): Promise<string | null> {
+  if (!BRAVE_API_KEY) return null;
+
+  const host = new URL(dealerDomain).hostname;
+  const query = encodeURIComponent(`${vin} site:${host}`);
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${query}&count=3`;
+
+  try {
+    const resp = await fetch(url, {
+      headers: {
+        "Accept": "application/json",
+        "X-Subscription-Token": BRAVE_API_KEY,
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!resp.ok) return null;
+
+    const data = await resp.json() as any;
+    const results = data?.web?.results || [];
+
+    for (const r of results) {
+      // Return the first result on the dealer domain that mentions the VIN
+      if (r.url && r.url.includes(host)) {
+        return r.url;
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
 /** Fetch a URL using curl subprocess (avoids Bun's TLS fingerprint triggering WAFs) */
 async function curlFetch(url: string): Promise<string | null> {
   try {
@@ -116,6 +149,68 @@ async function searchDealerSite(dealerDomain: string, vin: string): Promise<stri
   }
 
   return null;
+}
+
+/** Given a page that contains a VIN, find and follow the link to the vehicle detail page */
+async function followVdpLink(html: string, vin: string, dealerDomain: string): Promise<{ html: string; url: string } | null> {
+  // Look for <a> tags whose href is near or contains a reference to this VIN
+  // DealerSocket: /used/Make/Year-Make-Model-for-sale-location-hash.htm
+  // CDK: /VehicleDetails/used-Year-Make-Model-Location-VIN/id
+  // DealerOn: /inventory/used-Year-Make-Model/id
+
+  const vinUpper = vin.toUpperCase();
+  const vinLower = vin.toLowerCase();
+
+  // Strategy 1: Find links containing the VIN directly
+  const vinLinkRegex = new RegExp(`<a[^>]+href="([^"]*${vin}[^"]*)"`, "gi");
+  for (const m of html.matchAll(vinLinkRegex)) {
+    const href = resolveUrl(m[1]!, dealerDomain);
+    if (href) {
+      const vdpHtml = await curlFetch(href);
+      if (vdpHtml && vdpHtml.length > 5000) return { html: vdpHtml, url: href };
+      await sleep(FETCH_DELAY_MS);
+    }
+  }
+
+  // Strategy 2: Find the link closest to where the VIN appears in the HTML
+  const vinIdx = html.indexOf(vinUpper) !== -1 ? html.indexOf(vinUpper) : html.indexOf(vinLower);
+  if (vinIdx !== -1) {
+    // Search backwards from VIN position for the nearest <a href> (usually the card wraps the VIN)
+    const before = html.slice(Math.max(0, vinIdx - 3000), vinIdx);
+    const linkMatches = [...before.matchAll(/<a[^>]+href="([^"]+)"[^>]*>/gi)];
+    // Take the closest link (last match)
+    for (let i = linkMatches.length - 1; i >= 0; i--) {
+      const href = resolveUrl(linkMatches[i]![1]!, dealerDomain);
+      if (href && isVdpCandidate(href)) {
+        const vdpHtml = await curlFetch(href);
+        if (vdpHtml && vdpHtml.length > 5000) return { html: vdpHtml, url: href };
+        await sleep(FETCH_DELAY_MS);
+        break; // Only try the closest one
+      }
+    }
+  }
+
+  return null;
+}
+
+function resolveUrl(href: string, baseUrl: string): string | null {
+  try {
+    if (href.startsWith("http")) return href;
+    if (href.startsWith("/")) return new URL(href, baseUrl).href;
+    return new URL(href, baseUrl).href;
+  } catch {
+    return null;
+  }
+}
+
+function isVdpCandidate(url: string): boolean {
+  const path = new URL(url).pathname.toLowerCase();
+  // Skip generic pages
+  if (path === "/" || path === "/inventory/" || path === "/used-inventory/" || path.endsWith("index.htm")) return false;
+  // VDP patterns: long paths with vehicle details
+  return path.includes("/used/") || path.includes("/pre-owned/") ||
+    path.includes("/vehicledetails/") || path.includes("/vehicle/") ||
+    path.includes("-for-sale") || path.includes("/inventory/") && path.length > 30;
 }
 
 /** Parse a dealer page HTML for vehicle data matching the given VIN */
@@ -201,7 +296,39 @@ function parseDealerHtml(html: string, vin: string, pageUrl: string): Enrichment
     if (extMatch) data.exteriorColor = extMatch[1]!.trim();
   }
 
-  const hasData = data.price || data.mileage || data.interiorColor || data.exteriorColor;
+  // Image extraction: og:image, meta tags, pictures.dealer.com
+  if (!data.imageUrl) {
+    // og:image (may use name= or property=)
+    const ogImageMatch = html.match(/<meta[^>]+(?:property|name)="og:image"[^>]+content="([^"]+)"/i)
+      || html.match(/<meta[^>]+content="([^"]+)"[^>]+(?:property|name)="og:image"/i);
+    if (ogImageMatch) {
+      data.imageUrl = ogImageMatch[1]!;
+    }
+  }
+
+  // JSON-LD image field
+  if (!data.imageUrl) {
+    const jsonLdImgs = html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi);
+    for (const m of jsonLdImgs) {
+      try {
+        const parsed = JSON.parse(m[1]!);
+        const items = Array.isArray(parsed) ? parsed : [parsed];
+        for (const item of items) {
+          const img = item.image;
+          if (img) {
+            const imgUrl = typeof img === "string" ? img : (Array.isArray(img) ? img[0] : img?.url);
+            if (imgUrl && typeof imgUrl === "string" && imgUrl.startsWith("http")) {
+              data.imageUrl = imgUrl;
+              break;
+            }
+          }
+        }
+      } catch {}
+      if (data.imageUrl) break;
+    }
+  }
+
+  const hasData = data.price || data.mileage || data.interiorColor || data.exteriorColor || data.imageUrl;
   return hasData ? data : null;
 }
 
@@ -248,7 +375,7 @@ export interface EnrichResult {
 
 /** Enrich a single VIN — returns true if data was found */
 async function enrichSingleVin(
-  candidate: { vin: string; price: number; mileage: number; interiorColor: string; dealerName: string; dealerLocation: string },
+  candidate: { vin: string; price: number; mileage: number; interiorColor: string; imageUrl: string; dealerName: string; dealerLocation: string },
   dealerDomainCache: Map<string, string | null>,
   log: (msg: string) => void,
 ): Promise<boolean> {
@@ -257,6 +384,7 @@ async function enrichSingleVin(
   if (c.price === 0) missing.push("price");
   if (c.mileage === 0) missing.push("mileage");
   if (!c.interiorColor) missing.push("interiorColor");
+  if (!c.imageUrl) missing.push("imageUrl");
 
   log(`[enrich] ${c.vin} (${c.dealerName}) — missing: ${missing.join(", ")}`);
 
@@ -279,8 +407,29 @@ async function enrichSingleVin(
 
   log(`[enrich] ${c.vin}: dealer site → ${dealerDomain}`);
 
-  // Step 2: Search dealer site for VIN
-  const html = await searchDealerSite(dealerDomain, c.vin);
+  // Step 2a: Search Brave for VIN on the dealer's domain (finds the exact VDP URL)
+  let html: string | null = null;
+  let pageUrl = `${dealerDomain}/search/?q=${c.vin}`;
+
+  const vinPageUrl = await findVinOnDealerSite(dealerDomain, c.vin);
+  await sleep(BRAVE_DELAY_MS);
+
+  if (vinPageUrl) {
+    log(`[enrich] ${c.vin}: found VDP via Brave → ${vinPageUrl}`);
+    html = await curlFetch(vinPageUrl);
+    if (html) pageUrl = vinPageUrl;
+    await sleep(FETCH_DELAY_MS);
+  }
+
+  // Step 2b: Fall back to DMS search patterns if Brave didn't find the VDP
+  if (!html || !html.includes(c.vin)) {
+    const searchHtml = await searchDealerSite(dealerDomain, c.vin);
+    if (searchHtml) {
+      html = searchHtml;
+      pageUrl = `${dealerDomain}/search/?q=${c.vin}`;
+    }
+  }
+
   if (!html) {
     log(`[enrich] ${c.vin}: VIN not found on dealer site`);
     saveEnrichment(c.vin, {});
@@ -288,14 +437,25 @@ async function enrichSingleVin(
   }
 
   // Step 3: Parse vehicle data
-  const data = parseDealerHtml(html, c.vin, `${dealerDomain}/search/?q=${c.vin}`);
+  let data = parseDealerHtml(html, c.vin, pageUrl);
+
+  // Step 3b: If no structured data, try following VDP links from the page
+  if (!data && html.includes(c.vin)) {
+    log(`[enrich] ${c.vin}: no structured data on search page, following VDP link...`);
+    const vdp = await followVdpLink(html, c.vin, dealerDomain);
+    if (vdp) {
+      log(`[enrich] ${c.vin}: followed VDP → ${vdp.url}`);
+      data = parseDealerHtml(vdp.html, c.vin, vdp.url);
+    }
+  }
+
   if (data) {
     const fields = Object.keys(data).filter(k => k !== "dealerUrl" && (data as any)[k]);
     log(`[enrich] ${c.vin}: enriched (${fields.join(", ")}) from ${data.dealerUrl}`);
     saveEnrichment(c.vin, data);
     return true;
   } else {
-    log(`[enrich] ${c.vin}: page had VIN but no extractable data`);
+    log(`[enrich] ${c.vin}: no extractable data found`);
     saveEnrichment(c.vin, {});
     return false;
   }

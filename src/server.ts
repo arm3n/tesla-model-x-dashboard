@@ -1,6 +1,6 @@
 import { resolve } from "path";
 import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, updateListingFields, removeListingOverrides, getListingOverrides, getEnrichmentMap } from "./db.ts";
-import { refresh } from "../scripts/refresh.ts";
+import { refresh, refreshVins } from "../scripts/refresh.ts";
 import { runEnrichment, runEnrichmentForVins } from "./scraper/enrich.ts";
 
 const PUBLIC_DIR = resolve(import.meta.dir, "../public");
@@ -188,7 +188,7 @@ const server = Bun.serve({
       if (!body.vin || !body.fields || Object.keys(body.fields).length === 0) {
         return Response.json({ error: "vin and fields required" }, { status: 400 });
       }
-      const allowed = new Set(['price', 'mileage', 'year', 'trim', 'exteriorColor', 'interiorColor', 'seatCount', 'dealerName', 'dealerLocation', 'titleStatus', 'accidentHistory']);
+      const allowed = new Set(['price', 'mileage', 'year', 'trim', 'exteriorColor', 'interiorColor', 'seatCount', 'dealerName', 'dealerLocation', 'titleStatus', 'accidentHistory', 'imageUrl']);
       const clean: Record<string, any> = {};
       for (const [k, v] of Object.entries(body.fields)) {
         if (allowed.has(k)) clean[k] = v;
@@ -271,11 +271,17 @@ const server = Bun.serve({
       }
 
       let sources: string[] | undefined;
+      let vins: { vin: string; year: number; source: string }[] | undefined;
       try {
         const text = await req.text();
         if (text) {
-          const body = JSON.parse(text) as { sources?: string[] };
-          if (Array.isArray(body.sources) && body.sources.length > 0) {
+          const body = JSON.parse(text) as {
+            sources?: string[];
+            vins?: { vin: string; year: number; source: string }[];
+          };
+          if (Array.isArray(body.vins) && body.vins.length > 0) {
+            vins = body.vins;
+          } else if (Array.isArray(body.sources) && body.sources.length > 0) {
             sources = body.sources;
           }
         }
@@ -286,24 +292,41 @@ const server = Bun.serve({
       refreshInProgress = true;
       refreshLog = [];
       refreshSeq++;
-      const label = sources ? sources.join(", ") : "all sources";
-      logProgress(`Starting data refresh (${label})...`);
 
-      refresh((msg) => {
-        logProgress(msg);
-      }, sources)
-        .then((stats) => {
-          logProgress(
-            `Done! ${stats.filtered} filtered listings (${stats.total} total)`,
-            "done"
-          );
-        })
-        .catch((err) => {
-          logProgress("Error: " + String(err), "error");
-        })
-        .finally(() => {
-          refreshInProgress = false;
-        });
+      if (vins) {
+        // Per-VIN re-scrape mode (fast — skips full pagination)
+        const label = `${vins.length} VIN(s)`;
+        logProgress(`Re-scraping ${label}...`);
+
+        refreshVins(vins, (msg) => logProgress(msg))
+          .then((count) => {
+            logProgress(`Done! Re-scraped ${count} listing(s)`, "done");
+          })
+          .catch((err) => {
+            logProgress("Error: " + String(err), "error");
+          })
+          .finally(() => {
+            refreshInProgress = false;
+          });
+      } else {
+        // Full refresh mode
+        const label = sources ? sources.join(", ") : "all sources";
+        logProgress(`Starting data refresh (${label})...`);
+
+        refresh((msg) => logProgress(msg), sources)
+          .then((stats) => {
+            logProgress(
+              `Done! ${stats.filtered} filtered listings (${stats.total} total)`,
+              "done"
+            );
+          })
+          .catch((err) => {
+            logProgress("Error: " + String(err), "error");
+          })
+          .finally(() => {
+            refreshInProgress = false;
+          });
+      }
 
       return Response.json({ success: true, message: "Refresh started" });
     }

@@ -137,9 +137,15 @@ export function getDb(): Database {
       interiorColor TEXT,
       exteriorColor TEXT,
       dealerUrl TEXT,
+      imageUrl TEXT,
       searchedAt TEXT NOT NULL
     )
   `);
+
+  // Migration: add imageUrl column if missing (existing DBs)
+  try {
+    _db.exec(`ALTER TABLE enrichment_cache ADD COLUMN imageUrl TEXT`);
+  } catch {}
 
   return _db;
 }
@@ -607,39 +613,43 @@ export interface EnrichmentData {
   mileage?: number;
   interiorColor?: string;
   exteriorColor?: string;
+  imageUrl?: string;
   dealerUrl?: string;
 }
 
-/** Get active filtered listings missing price, mileage, or interior color, not enriched in last 7 days */
-export function getEnrichmentCandidates(): { vin: string; price: number; mileage: number; interiorColor: string; dealerName: string; dealerLocation: string }[] {
+/** Get active filtered listings missing price, mileage, interior color, or image, not enriched in last 7 days */
+export function getEnrichmentCandidates(): { vin: string; price: number; mileage: number; interiorColor: string; imageUrl: string; dealerName: string; dealerLocation: string }[] {
   const db = getDb();
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   return db.prepare(`
-    SELECT l.vin, l.price, l.mileage, l.interiorColor, l.dealerName, l.dealerLocation
+    SELECT l.vin, l.price, l.mileage, l.interiorColor, l.imageUrl, l.dealerName, l.dealerLocation
     FROM listings l
     WHERE l.isActive = 1
       AND l.vin NOT IN (SELECT vin FROM excluded_vins)
-      AND (l.price = 0 OR l.mileage = 0 OR l.interiorColor = '' OR l.interiorColor IS NULL)
+      AND (l.price = 0 OR l.mileage = 0 OR l.interiorColor = '' OR l.interiorColor IS NULL
+           OR l.imageUrl IS NULL OR l.imageUrl = '')
       AND l.vin NOT IN (SELECT vin FROM enrichment_cache WHERE searchedAt > $cutoff)
     ORDER BY
       (CASE WHEN l.price = 0 THEN 1 ELSE 0 END) +
       (CASE WHEN l.mileage = 0 THEN 1 ELSE 0 END) +
-      (CASE WHEN l.interiorColor = '' OR l.interiorColor IS NULL THEN 1 ELSE 0 END) DESC
-  `).all({ $cutoff: sevenDaysAgo }) as { vin: string; price: number; mileage: number; interiorColor: string; dealerName: string; dealerLocation: string }[];
+      (CASE WHEN l.interiorColor = '' OR l.interiorColor IS NULL THEN 1 ELSE 0 END) +
+      (CASE WHEN l.imageUrl IS NULL OR l.imageUrl = '' THEN 1 ELSE 0 END) DESC
+  `).all({ $cutoff: sevenDaysAgo }) as { vin: string; price: number; mileage: number; interiorColor: string; imageUrl: string; dealerName: string; dealerLocation: string }[];
 }
 
 /** Save enrichment results (upsert into enrichment_cache) */
 export function saveEnrichment(vin: string, data: EnrichmentData): void {
   const db = getDb();
   db.prepare(`
-    INSERT OR REPLACE INTO enrichment_cache (vin, price, mileage, interiorColor, exteriorColor, dealerUrl, searchedAt)
-    VALUES ($vin, $price, $mileage, $interiorColor, $exteriorColor, $dealerUrl, $searchedAt)
+    INSERT OR REPLACE INTO enrichment_cache (vin, price, mileage, interiorColor, exteriorColor, imageUrl, dealerUrl, searchedAt)
+    VALUES ($vin, $price, $mileage, $interiorColor, $exteriorColor, $imageUrl, $dealerUrl, $searchedAt)
   `).run({
     $vin: vin,
     $price: data.price ?? null,
     $mileage: data.mileage ?? null,
     $interiorColor: data.interiorColor ?? null,
     $exteriorColor: data.exteriorColor ?? null,
+    $imageUrl: data.imageUrl ?? null,
     $dealerUrl: data.dealerUrl ?? null,
     $searchedAt: new Date().toISOString(),
   });
@@ -657,6 +667,7 @@ export function applyEnrichmentCache(): void {
       mileage = CASE WHEN mileage = 0 AND $mileage IS NOT NULL AND $mileage > 0 THEN $mileage ELSE mileage END,
       interiorColor = CASE WHEN (interiorColor = '' OR interiorColor IS NULL) AND $interiorColor IS NOT NULL AND $interiorColor != '' THEN $interiorColor ELSE interiorColor END,
       exteriorColor = CASE WHEN (exteriorColor = '' OR exteriorColor IS NULL) AND $exteriorColor IS NOT NULL AND $exteriorColor != '' THEN $exteriorColor ELSE exteriorColor END,
+      imageUrl = CASE WHEN (imageUrl IS NULL OR imageUrl = '') AND $imageUrl IS NOT NULL AND $imageUrl != '' THEN $imageUrl ELSE imageUrl END,
       url = CASE
         WHEN vin NOT IN (SELECT vin FROM url_overrides) AND $dealerUrl IS NOT NULL AND $dealerUrl != '' THEN $dealerUrl
         ELSE url END
@@ -671,6 +682,7 @@ export function applyEnrichmentCache(): void {
         $mileage: r.mileage,
         $interiorColor: r.interiorColor,
         $exteriorColor: r.exteriorColor,
+        $imageUrl: r.imageUrl,
         $dealerUrl: r.dealerUrl,
       });
     }
@@ -689,6 +701,7 @@ export function getEnrichmentMap(): Map<string, { fields: string[]; dealerUrl: s
     if (r.mileage != null && r.mileage > 0) fields.push('mileage');
     if (r.interiorColor != null && r.interiorColor !== '') fields.push('interiorColor');
     if (r.exteriorColor != null && r.exteriorColor !== '') fields.push('exteriorColor');
+    if (r.imageUrl != null && r.imageUrl !== '') fields.push('imageUrl');
     map.set(r.vin, { fields, dealerUrl: r.dealerUrl || null, searchedAt: r.searchedAt });
   }
   return map;
@@ -703,14 +716,14 @@ export function clearEnrichmentCache(vins: string[]): void {
 }
 
 /** Get listing data for specific VINs */
-export function getListingsByVins(vins: string[]): { vin: string; price: number; mileage: number; interiorColor: string; dealerName: string; dealerLocation: string }[] {
+export function getListingsByVins(vins: string[]): { vin: string; price: number; mileage: number; interiorColor: string; imageUrl: string; dealerName: string; dealerLocation: string }[] {
   const db = getDb();
   if (vins.length === 0) return [];
   const placeholders = vins.map(() => '?').join(',');
   return db.prepare(`
-    SELECT vin, price, mileage, interiorColor, dealerName, dealerLocation
+    SELECT vin, price, mileage, interiorColor, imageUrl, dealerName, dealerLocation
     FROM listings WHERE vin IN (${placeholders})
-  `).all(...vins) as { vin: string; price: number; mileage: number; interiorColor: string; dealerName: string; dealerLocation: string }[];
+  `).all(...vins) as { vin: string; price: number; mileage: number; interiorColor: string; imageUrl: string; dealerName: string; dealerLocation: string }[];
 }
 
 /** Re-apply all listing_overrides after a scraper refresh upsert */

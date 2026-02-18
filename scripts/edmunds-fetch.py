@@ -42,6 +42,23 @@ EXTRACT_STATE_JS = """
         const history = r.historyInfo || {};
         const recurrent = r.thirdPartyInfo?.recurrentInsights || {};
 
+        // Photos: try multiple known paths in Edmunds' Redux store
+        const photos = r.photoUrls || r.photos || vi.photoUrls || [];
+        let imageUrl = '';
+        if (Array.isArray(photos) && photos.length > 0) {
+            const first = photos[0];
+            imageUrl = typeof first === 'string' ? first : (first?.url || first?.src || first?.href || '');
+        }
+        // Fallback: thumbnail from media
+        if (!imageUrl) {
+            const media = r.mediaData || vi.mediaData || {};
+            const thumbs = media.thumbnails || media.photos || [];
+            if (Array.isArray(thumbs) && thumbs.length > 0) {
+                const t = thumbs[0];
+                imageUrl = typeof t === 'string' ? t : (t?.url || t?.src || '');
+            }
+        }
+
         items.push({
             vin: vin,
             price: prices.displayPrice || prices.advertisedPrice || 0,
@@ -57,6 +74,7 @@ EXTRACT_STATE_JS = """
             dealerName: dealer.name || '',
             dealerCity: addr.city || '',
             dealerState: addr.stateCode || '',
+            imageUrl: imageUrl || null,
             listingUrl: r.listingUrl || '',
             firstPublishedDate: r.firstPublishedDate || null,
             listedSince: r.listedSince || null,
@@ -74,10 +92,27 @@ EXTRACT_STATE_JS = """
         });
     }
 
+    // Debug: dump keys from the first result to find photo field paths
+    let debugKeys = null;
+    if (results.length > 0) {
+        const r = results[0];
+        const vi = r.vehicleInfo || {};
+        debugKeys = {
+            resultKeys: Object.keys(r).sort(),
+            vehicleInfoKeys: Object.keys(vi).sort(),
+            hasPhotoUrls: !!r.photoUrls,
+            hasPhotos: !!r.photos,
+            hasMedia: !!r.mediaData,
+            viHasPhotos: !!vi.photoUrls || !!vi.photos || !!vi.mediaData,
+            samplePhotoUrl: r.photoUrls?.[0] || r.photos?.[0] || null,
+        };
+    }
+
     return JSON.stringify({
         items: items,
         total: invs.totalNumber || 0,
         pages: invs.totalPages || 0,
+        debugKeys: debugKeys,
     });
 })()
 """
@@ -129,6 +164,18 @@ async def extract_page_data(page, page_num, all_items, seen_vins):
     items = data.get("items", [])
     total_pages = data.get("pages", 1)
     total_count = data.get("total", 0)
+
+    # Debug: log available keys from first result to identify photo fields
+    debug_keys = data.get("debugKeys")
+    if debug_keys and page_num == 1:
+        print(f"[Edmunds] DEBUG result keys: {debug_keys.get('resultKeys', [])}", file=sys.stderr)
+        print(f"[Edmunds] DEBUG vehicleInfo keys: {debug_keys.get('vehicleInfoKeys', [])}", file=sys.stderr)
+        print(f"[Edmunds] DEBUG photo flags: photoUrls={debug_keys.get('hasPhotoUrls')}, photos={debug_keys.get('hasPhotos')}, media={debug_keys.get('hasMedia')}, viPhotos={debug_keys.get('viHasPhotos')}", file=sys.stderr)
+        sample = debug_keys.get("samplePhotoUrl")
+        if sample:
+            print(f"[Edmunds] DEBUG sample photo: {sample}", file=sys.stderr)
+        else:
+            print(f"[Edmunds] DEBUG no photos found in tried paths", file=sys.stderr)
 
     new_count = 0
     for item in items:

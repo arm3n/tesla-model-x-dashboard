@@ -5,7 +5,7 @@ import { scrapeTesla } from "../src/scraper/tesla.ts";
 import { scrapeTrueCar } from "../src/scraper/truecar.ts";
 import { scrapeAutotrader } from "../src/scraper/autotrader.ts";
 import { scrapeEbayMotors } from "../src/scraper/ebay-motors.ts";
-import { scrapeEdmunds } from "../src/scraper/edmunds.ts";
+import { scrapeEdmunds, scrapeEdmundsByVin } from "../src/scraper/edmunds.ts";
 import { scrapeAutoDev } from "../src/scraper/auto-dev.ts";
 import { normalize, filterListings } from "../src/normalize.ts";
 import {
@@ -37,7 +37,7 @@ export interface RefreshStats {
 interface ScraperDef {
   name: string;
   key: keyof Omit<RefreshStats, "total" | "filtered">;
-  fn: () => Promise<RawListing[]>;
+  fn: (onProgress?: ProgressCallback) => Promise<RawListing[]>;
 }
 
 const SCRAPERS: ScraperDef[] = [
@@ -101,7 +101,7 @@ export async function refresh(
 
   const results = await Promise.allSettled(
     scraperTimings.map(({ scraper }) =>
-      scraper.fn().then((r) => {
+      scraper.fn(log).then((r) => {
         log(`${scraper.name}: ${r.length} listings found`);
         return r;
       })
@@ -203,6 +203,85 @@ export async function refresh(
   log(`Refresh complete in ${elapsed}s`);
 
   return stats;
+}
+
+/**
+ * Per-VIN re-scrape: fetches fresh data for specific VINs without running
+ * the full paginated scrapers. For Edmunds, uses curl on VDP pages (fast).
+ * For other sources, falls back to running the full scraper and filtering.
+ */
+export async function refreshVins(
+  vins: { vin: string; year: number; source: string }[],
+  onProgress?: ProgressCallback
+): Promise<number> {
+  const log = (msg: string) => {
+    console.log(msg);
+    onProgress?.(msg);
+  };
+
+  // Group VINs by source key
+  const bySource = new Map<string, { vin: string; year: number }[]>();
+  for (const v of vins) {
+    const key = SOURCE_KEY_MAP[v.source.toLowerCase()] ?? v.source.toLowerCase();
+    if (!bySource.has(key)) bySource.set(key, []);
+    bySource.get(key)!.push({ vin: v.vin, year: v.year });
+  }
+
+  const allRaw: RawListing[] = [];
+
+  for (const [sourceKey, sourceVins] of bySource) {
+    if (sourceKey === "edmunds") {
+      // Per-VIN Edmunds scrape via curl (fast — no browser needed)
+      for (const { vin, year } of sourceVins) {
+        log(`[Edmunds] Re-scraping VIN ${vin}...`);
+        try {
+          const result = await scrapeEdmundsByVin(vin, year);
+          if (result) {
+            allRaw.push(result);
+            log(`[Edmunds] Got data for ${vin}`);
+          } else {
+            log(`[Edmunds] No data for ${vin} (blocked or not found)`);
+          }
+        } catch (err) {
+          log(`[Edmunds] Error for ${vin}: ${err}`);
+        }
+      }
+    } else {
+      // For other sources, run the full scraper and filter to requested VINs
+      const scraper = SCRAPERS.find((s) => s.key === sourceKey);
+      if (!scraper) {
+        log(`Unknown source: ${sourceKey}`);
+        continue;
+      }
+      log(`[${scraper.name}] Running scraper for ${sourceVins.length} VIN(s)...`);
+      try {
+        const results = await scraper.fn(log);
+        const vinSet = new Set(sourceVins.map((v) => v.vin.toUpperCase()));
+        const matched = results.filter((r) => vinSet.has(r.vin.toUpperCase()));
+        allRaw.push(...matched);
+        log(
+          `[${scraper.name}] Found ${matched.length}/${sourceVins.length} requested VIN(s)`
+        );
+      } catch (err) {
+        log(`[${scraper.name}] Error: ${err}`);
+      }
+    }
+  }
+
+  if (allRaw.length === 0) {
+    log("No results to update.");
+    return 0;
+  }
+
+  // Normalize and upsert
+  const existing = getExistingListingsMap();
+  const normalized = await normalize(allRaw, existing);
+  log(`Upserting ${normalized.length} listing(s)...`);
+  upsertListings(normalized);
+  applyEnrichmentCache();
+  applyListingOverrides();
+
+  return normalized.length;
 }
 
 // Run directly

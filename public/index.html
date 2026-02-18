@@ -1085,20 +1085,20 @@
     async function rescrapeSelected() {
       const selected = gridApi.getSelectedRows();
       if (selected.length === 0) return;
-      const sources = [...new Set(selected.map(r => r.source))];
+      const vins = selected.map(r => ({ vin: r.vin, year: r.year, source: r.source }));
       gridApi.deselectAll();
       updateSelectionButtons();
 
       const btn = document.getElementById('refreshBtn');
       btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span>Refreshing...';
+      btn.innerHTML = '<span class="spinner"></span>Re-scraping...';
       showProgress();
 
       try {
         const res = await fetch('/api/refresh', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sources }),
+          body: JSON.stringify({ vins }),
         });
         const data = await res.json();
         if (!data.success) {
