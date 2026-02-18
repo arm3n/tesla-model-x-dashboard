@@ -1,7 +1,7 @@
 import { resolve } from "path";
-import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, updateListingFields, removeListingOverrides, getListingOverrides } from "./db.ts";
+import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, updateListingFields, removeListingOverrides, getListingOverrides, getEnrichmentMap } from "./db.ts";
 import { refresh } from "../scripts/refresh.ts";
-import { runEnrichment } from "./scraper/enrich.ts";
+import { runEnrichment, runEnrichmentForVins } from "./scraper/enrich.ts";
 
 const PUBLIC_DIR = resolve(import.meta.dir, "../public");
 const PORT = 3000;
@@ -22,9 +22,19 @@ const server = Bun.serve({
     if (url.pathname === "/api/listings") {
       const showAll = url.searchParams.get("all") === "true";
       const listings = showAll ? getAllListings() : getFilteredListings();
+      const enrichmentMap = getEnrichmentMap();
+      const enrichedListings = listings.map(l => {
+        const enrichment = enrichmentMap.get(l.vin);
+        return {
+          ...l,
+          _enriched: enrichment && enrichment.fields.length > 0
+            ? { fields: enrichment.fields, dealerUrl: enrichment.dealerUrl, searchedAt: enrichment.searchedAt }
+            : null,
+        };
+      });
       return Response.json({
-        listings,
-        count: listings.length,
+        listings: enrichedListings,
+        count: enrichedListings.length,
         timestamp: new Date().toISOString(),
       });
     }
@@ -220,6 +230,29 @@ const server = Bun.serve({
       try {
         const result = await runEnrichment((msg) => logProgress(msg));
         logProgress(`Enrichment done: ${result.enriched} enriched of ${result.candidates} candidates`, "done");
+        return Response.json({ success: true, ...result });
+      } catch (err) {
+        logProgress("Enrichment error: " + String(err), "error");
+        return Response.json({ error: String(err) }, { status: 500 });
+      } finally {
+        refreshInProgress = false;
+      }
+    }
+
+    // Targeted VIN enrichment (re-enrich specific VINs)
+    if (url.pathname === "/api/enrich-vins" && req.method === "POST") {
+      if (refreshInProgress) {
+        return Response.json({ error: "Refresh in progress, try after it completes" }, { status: 409 });
+      }
+      const body = await req.json() as { vins?: string[] };
+      if (!body.vins || !Array.isArray(body.vins) || body.vins.length === 0) {
+        return Response.json({ error: "vins array required" }, { status: 400 });
+      }
+      refreshInProgress = true;
+      logProgress(`Starting targeted enrichment for ${body.vins.length} VINs...`);
+      try {
+        const result = await runEnrichmentForVins(body.vins, (msg) => logProgress(msg));
+        logProgress(`Targeted enrichment done: ${result.enriched} enriched of ${result.candidates} VINs`, "done");
         return Response.json({ success: true, ...result });
       } catch (err) {
         logProgress("Enrichment error: " + String(err), "error");

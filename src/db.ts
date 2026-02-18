@@ -678,6 +678,41 @@ export function applyEnrichmentCache(): void {
   transaction();
 }
 
+/** Get enrichment map: vin -> { fields enriched, dealerUrl, searchedAt } */
+export function getEnrichmentMap(): Map<string, { fields: string[]; dealerUrl: string | null; searchedAt: string }> {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM enrichment_cache').all() as any[];
+  const map = new Map<string, { fields: string[]; dealerUrl: string | null; searchedAt: string }>();
+  for (const r of rows) {
+    const fields: string[] = [];
+    if (r.price != null && r.price > 0) fields.push('price');
+    if (r.mileage != null && r.mileage > 0) fields.push('mileage');
+    if (r.interiorColor != null && r.interiorColor !== '') fields.push('interiorColor');
+    if (r.exteriorColor != null && r.exteriorColor !== '') fields.push('exteriorColor');
+    map.set(r.vin, { fields, dealerUrl: r.dealerUrl || null, searchedAt: r.searchedAt });
+  }
+  return map;
+}
+
+/** Delete enrichment cache rows for specific VINs (forces re-enrichment) */
+export function clearEnrichmentCache(vins: string[]): void {
+  const db = getDb();
+  if (vins.length === 0) return;
+  const placeholders = vins.map(() => '?').join(',');
+  db.prepare(`DELETE FROM enrichment_cache WHERE vin IN (${placeholders})`).run(...vins);
+}
+
+/** Get listing data for specific VINs */
+export function getListingsByVins(vins: string[]): { vin: string; price: number; mileage: number; interiorColor: string; dealerName: string; dealerLocation: string }[] {
+  const db = getDb();
+  if (vins.length === 0) return [];
+  const placeholders = vins.map(() => '?').join(',');
+  return db.prepare(`
+    SELECT vin, price, mileage, interiorColor, dealerName, dealerLocation
+    FROM listings WHERE vin IN (${placeholders})
+  `).all(...vins) as { vin: string; price: number; mileage: number; interiorColor: string; dealerName: string; dealerLocation: string }[];
+}
+
 /** Re-apply all listing_overrides after a scraper refresh upsert */
 export function applyListingOverrides(): void {
   const db = getDb();

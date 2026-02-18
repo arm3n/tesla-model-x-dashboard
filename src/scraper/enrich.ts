@@ -1,4 +1,4 @@
-import { getEnrichmentCandidates, saveEnrichment, applyEnrichmentCache, type EnrichmentData } from "../db.ts";
+import { getEnrichmentCandidates, saveEnrichment, applyEnrichmentCache, clearEnrichmentCache, getListingsByVins, type EnrichmentData } from "../db.ts";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
@@ -246,6 +246,61 @@ export interface EnrichResult {
   enriched: number;
 }
 
+/** Enrich a single VIN — returns true if data was found */
+async function enrichSingleVin(
+  candidate: { vin: string; price: number; mileage: number; interiorColor: string; dealerName: string; dealerLocation: string },
+  dealerDomainCache: Map<string, string | null>,
+  log: (msg: string) => void,
+): Promise<boolean> {
+  const c = candidate;
+  const missing: string[] = [];
+  if (c.price === 0) missing.push("price");
+  if (c.mileage === 0) missing.push("mileage");
+  if (!c.interiorColor) missing.push("interiorColor");
+
+  log(`[enrich] ${c.vin} (${c.dealerName}) — missing: ${missing.join(", ")}`);
+
+  // Step 1: Find dealer domain (cached by dealer name)
+  const cacheKey = `${c.dealerName}|${c.dealerLocation}`;
+  let dealerDomain: string | null;
+  if (dealerDomainCache.has(cacheKey)) {
+    dealerDomain = dealerDomainCache.get(cacheKey)!;
+  } else {
+    dealerDomain = await findDealerDomain(c.dealerName, c.dealerLocation);
+    dealerDomainCache.set(cacheKey, dealerDomain);
+    await sleep(BRAVE_DELAY_MS);
+  }
+
+  if (!dealerDomain) {
+    log(`[enrich] ${c.vin}: couldn't find dealer website for "${c.dealerName}"`);
+    saveEnrichment(c.vin, {});
+    return false;
+  }
+
+  log(`[enrich] ${c.vin}: dealer site → ${dealerDomain}`);
+
+  // Step 2: Search dealer site for VIN
+  const html = await searchDealerSite(dealerDomain, c.vin);
+  if (!html) {
+    log(`[enrich] ${c.vin}: VIN not found on dealer site`);
+    saveEnrichment(c.vin, {});
+    return false;
+  }
+
+  // Step 3: Parse vehicle data
+  const data = parseDealerHtml(html, c.vin, `${dealerDomain}/search/?q=${c.vin}`);
+  if (data) {
+    const fields = Object.keys(data).filter(k => k !== "dealerUrl" && (data as any)[k]);
+    log(`[enrich] ${c.vin}: enriched (${fields.join(", ")}) from ${data.dealerUrl}`);
+    saveEnrichment(c.vin, data);
+    return true;
+  } else {
+    log(`[enrich] ${c.vin}: page had VIN but no extractable data`);
+    saveEnrichment(c.vin, {});
+    return false;
+  }
+}
+
 /** Run VIN enrichment: find dealer sites, search for VINs, extract data */
 export async function runEnrichment(onProgress?: EnrichProgressCallback): Promise<EnrichResult> {
   const log = (msg: string) => {
@@ -264,62 +319,51 @@ export async function runEnrichment(onProgress?: EnrichProgressCallback): Promis
 
   let searched = 0;
   let enriched = 0;
-
-  // Cache dealer domains to avoid redundant Brave API calls
   const dealerDomainCache = new Map<string, string | null>();
 
   for (const c of toSearch) {
-    const missing: string[] = [];
-    if (c.price === 0) missing.push("price");
-    if (c.mileage === 0) missing.push("mileage");
-    if (!c.interiorColor) missing.push("interiorColor");
-
-    log(`[enrich] ${c.vin} (${c.dealerName}) — missing: ${missing.join(", ")}`);
     searched++;
-
-    // Step 1: Find dealer domain (cached by dealer name)
-    const cacheKey = `${c.dealerName}|${c.dealerLocation}`;
-    let dealerDomain: string | null;
-    if (dealerDomainCache.has(cacheKey)) {
-      dealerDomain = dealerDomainCache.get(cacheKey)!;
-    } else {
-      dealerDomain = await findDealerDomain(c.dealerName, c.dealerLocation);
-      dealerDomainCache.set(cacheKey, dealerDomain);
-      await sleep(BRAVE_DELAY_MS);
-    }
-
-    if (!dealerDomain) {
-      log(`[enrich] ${c.vin}: couldn't find dealer website for "${c.dealerName}"`);
-      saveEnrichment(c.vin, {});
-      continue;
-    }
-
-    log(`[enrich] ${c.vin}: dealer site → ${dealerDomain}`);
-
-    // Step 2: Search dealer site for VIN
-    const html = await searchDealerSite(dealerDomain, c.vin);
-    if (!html) {
-      log(`[enrich] ${c.vin}: VIN not found on dealer site`);
-      saveEnrichment(c.vin, {});
-      continue;
-    }
-
-    // Step 3: Parse vehicle data
-    const data = parseDealerHtml(html, c.vin, `${dealerDomain}/search/?q=${c.vin}`);
-    if (data) {
-      const fields = Object.keys(data).filter(k => k !== "dealerUrl" && (data as any)[k]);
-      log(`[enrich] ${c.vin}: enriched (${fields.join(", ")}) from ${data.dealerUrl}`);
-      saveEnrichment(c.vin, data);
-      enriched++;
-    } else {
-      log(`[enrich] ${c.vin}: page had VIN but no extractable data`);
-      saveEnrichment(c.vin, {});
-    }
+    const found = await enrichSingleVin(c, dealerDomainCache, log);
+    if (found) enriched++;
   }
 
-  // Apply all cached enrichment to fill blanks in listings
   applyEnrichmentCache();
   log(`[enrich] Done. Searched ${searched}, enriched ${enriched} of ${candidates.length} candidates`);
 
   return { candidates: candidates.length, searched, enriched };
+}
+
+/** Run enrichment for specific VINs (clears cache first to force re-search) */
+export async function runEnrichmentForVins(vins: string[], onProgress?: EnrichProgressCallback): Promise<EnrichResult> {
+  const log = (msg: string) => {
+    console.log(msg);
+    onProgress?.(msg);
+  };
+
+  if (!BRAVE_API_KEY) {
+    log("[enrich] No Brave Search API key found — skipping enrichment");
+    return { candidates: 0, searched: 0, enriched: 0 };
+  }
+
+  // Clear cache for these VINs so they get re-searched
+  clearEnrichmentCache(vins);
+  log(`[enrich] Cleared cache for ${vins.length} VINs`);
+
+  const listings = getListingsByVins(vins);
+  log(`[enrich] ${listings.length} listings found for ${vins.length} VINs`);
+
+  let searched = 0;
+  let enriched = 0;
+  const dealerDomainCache = new Map<string, string | null>();
+
+  for (const c of listings) {
+    searched++;
+    const found = await enrichSingleVin(c, dealerDomainCache, log);
+    if (found) enriched++;
+  }
+
+  applyEnrichmentCache();
+  log(`[enrich] Done. Searched ${searched}, enriched ${enriched} of ${listings.length} VINs`);
+
+  return { candidates: listings.length, searched, enriched };
 }

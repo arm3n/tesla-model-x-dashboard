@@ -157,6 +157,8 @@
       --ag-font-size: 13px;
     }
 
+    .cell-enriched { border-left: 2px solid #58a6ff !important; }
+
     .badge {
       display: inline-block;
       padding: 2px 8px;
@@ -491,6 +493,8 @@
       </label>
       <button class="btn" id="logsBtn" onclick="toggleLogsPanel()">Scraper Logs</button>
       <button class="btn" id="excludedBtn" onclick="toggleExcludedPanel()">Excluded (<span id="excludedCount">0</span>)</button>
+      <button class="btn" id="rescrapeBtn" onclick="rescrapeSelected()" disabled>Re-scrape (0)</button>
+      <button class="btn" id="reenrichBtn" onclick="reenrichSelected()" disabled>Re-enrich (0)</button>
       <button class="btn btn-primary" id="refreshBtn" onclick="doRefresh()">Refresh Now</button>
       <span id="lastUpdate" class="toggle-label"></span>
     </div>
@@ -649,17 +653,62 @@
         width: 110,
         filter: 'agNumberColumnFilter',
         valueFormatter: (p) => p.value ? currencyFmt.format(p.value) : '--',
-        sort: 'asc'
+        cellClassRules: {
+          'cell-enriched': (p) => p.data?._enriched?.fields?.includes('price') && !listingOverrides.get(p.data?.vin)?.fields?.price,
+        },
+        tooltipValueGetter: (p) => {
+          if (p.data?._enriched?.fields?.includes('price') && !listingOverrides.get(p.data?.vin)?.fields?.price) {
+            return 'Enriched from ' + (p.data._enriched.dealerUrl || 'dealer site');
+          }
+          return null;
+        },
       },
       {
         headerName: 'Mileage',
         field: 'mileage',
         width: 100,
         filter: 'agNumberColumnFilter',
-        valueFormatter: (p) => p.value ? numFmt.format(p.value) + ' mi' : '--'
+        valueFormatter: (p) => p.value ? numFmt.format(p.value) + ' mi' : '--',
+        cellClassRules: {
+          'cell-enriched': (p) => p.data?._enriched?.fields?.includes('mileage') && !listingOverrides.get(p.data?.vin)?.fields?.mileage,
+        },
+        tooltipValueGetter: (p) => {
+          if (p.data?._enriched?.fields?.includes('mileage') && !listingOverrides.get(p.data?.vin)?.fields?.mileage) {
+            return 'Enriched from ' + (p.data._enriched.dealerUrl || 'dealer site');
+          }
+          return null;
+        },
       },
-      { headerName: 'Ext. Color', field: 'exteriorColor', width: 120, filter: 'agTextColumnFilter' },
-      { headerName: 'Int. Color', field: 'interiorColor', width: 120, filter: 'agTextColumnFilter' },
+      {
+        headerName: 'Ext. Color',
+        field: 'exteriorColor',
+        width: 120,
+        filter: 'agTextColumnFilter',
+        cellClassRules: {
+          'cell-enriched': (p) => p.data?._enriched?.fields?.includes('exteriorColor') && !listingOverrides.get(p.data?.vin)?.fields?.exteriorColor,
+        },
+        tooltipValueGetter: (p) => {
+          if (p.data?._enriched?.fields?.includes('exteriorColor') && !listingOverrides.get(p.data?.vin)?.fields?.exteriorColor) {
+            return 'Enriched from ' + (p.data._enriched.dealerUrl || 'dealer site');
+          }
+          return null;
+        },
+      },
+      {
+        headerName: 'Int. Color',
+        field: 'interiorColor',
+        width: 120,
+        filter: 'agTextColumnFilter',
+        cellClassRules: {
+          'cell-enriched': (p) => p.data?._enriched?.fields?.includes('interiorColor') && !listingOverrides.get(p.data?.vin)?.fields?.interiorColor,
+        },
+        tooltipValueGetter: (p) => {
+          if (p.data?._enriched?.fields?.includes('interiorColor') && !listingOverrides.get(p.data?.vin)?.fields?.interiorColor) {
+            return 'Enriched from ' + (p.data._enriched.dealerUrl || 'dealer site');
+          }
+          return null;
+        },
+      },
       {
         headerName: 'Seats',
         field: 'seatCount',
@@ -767,6 +816,83 @@
       }
     ];
 
+    const STORAGE_KEY = 'tesla-dashboard-state';
+    let saveStateTimer = null;
+    let _initComplete = false;
+
+    // Read saved state BEFORE grid creation to bake sort into column defs
+    const _savedState = (() => {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch { return null; }
+    })();
+
+    // Apply saved sort to column definitions (avoids AG Grid race conditions)
+    if (_savedState?.columnState) {
+      for (const col of columnDefs) {
+        const id = col.colId || col.field;
+        const saved = _savedState.columnState.find(c => c.colId === id);
+        if (saved?.sort) {
+          col.sort = saved.sort;
+          if (saved.sortIndex != null) col.sortIndex = saved.sortIndex;
+        }
+        if (saved?.width) col.width = saved.width;
+      }
+    } else {
+      // Default: price ascending
+      const priceCol = columnDefs.find(c => c.field === 'price');
+      if (priceCol) priceCol.sort = 'asc';
+    }
+
+    function saveState() {
+      if (!_initComplete) return;
+      if (saveStateTimer) clearTimeout(saveStateTimer);
+      saveStateTimer = setTimeout(() => {
+        if (!gridApi) return;
+        try {
+          const state = {
+            filterModel: gridApi.getFilterModel(),
+            columnState: gridApi.getColumnState(),
+            showAll: document.getElementById('showAll').checked,
+            pageSize: gridApi.paginationGetPageSize(),
+          };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        } catch {}
+      }, 500);
+    }
+
+    function restorePreLoadState() {
+      if (!gridApi || !_savedState) return;
+      try {
+        if (_savedState.showAll != null) {
+          document.getElementById('showAll').checked = _savedState.showAll;
+        }
+        if (_savedState.pageSize) {
+          gridApi.paginationSetPageSize(_savedState.pageSize);
+        }
+        if (_savedState.filterModel) {
+          gridApi.setFilterModel(_savedState.filterModel);
+        }
+        if (_savedState.columnState) {
+          gridApi.applyColumnState({ state: _savedState.columnState, applyOrder: true });
+        }
+      } catch {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    }
+
+    function updateSelectionButtons() {
+      const selected = gridApi.getSelectedRows();
+      const count = selected.length;
+      const rescrapeBtn = document.getElementById('rescrapeBtn');
+      const reenrichBtn = document.getElementById('reenrichBtn');
+      rescrapeBtn.textContent = `Re-scrape (${count})`;
+      rescrapeBtn.disabled = count === 0;
+      reenrichBtn.textContent = `Re-enrich (${count})`;
+      reenrichBtn.disabled = count === 0;
+    }
+
     const gridOptions = {
       columnDefs,
       defaultColDef: {
@@ -784,9 +910,23 @@
       pagination: true,
       paginationPageSize: 50,
       paginationPageSizeSelector: [25, 50, 100, 200],
+      tooltipShowDelay: 300,
+      rowSelection: { mode: 'multiRow', checkboxes: true, headerCheckbox: true, enableClickSelection: false },
       getRowClass: (params) => {
         if (params.data && params.data.isFavorite) return 'row-favorite';
         return '';
+      },
+      onSelectionChanged: updateSelectionButtons,
+      onFilterChanged: saveState,
+      onSortChanged: saveState,
+      onColumnResized: saveState,
+      onColumnMoved: saveState,
+      onPaginationChanged: saveState,
+      onGridReady: () => {
+        restorePreLoadState();
+        Promise.all([loadUrlOverrides(), loadListingOverrides()]).then(() => {
+          loadListings().then(() => { _initComplete = true; });
+        });
       },
     };
 
@@ -923,6 +1063,78 @@
       }
     }
 
+    async function rescrapeSelected() {
+      const selected = gridApi.getSelectedRows();
+      if (selected.length === 0) return;
+      const sources = [...new Set(selected.map(r => r.source))];
+      gridApi.deselectAll();
+      updateSelectionButtons();
+
+      const btn = document.getElementById('refreshBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Refreshing...';
+      showProgress();
+
+      try {
+        const res = await fetch('/api/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sources }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+          addProgressLine('Failed: ' + (data.error || 'Unknown'), 'error');
+          btn.disabled = false;
+          btn.textContent = 'Refresh Now';
+          hideProgress(5000);
+          return;
+        }
+        startPolling();
+      } catch (err) {
+        addProgressLine('Network error: ' + err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Refresh Now';
+        hideProgress(5000);
+      }
+    }
+
+    async function reenrichSelected() {
+      const selected = gridApi.getSelectedRows();
+      if (selected.length === 0) return;
+      const vins = selected.map(r => r.vin);
+      gridApi.deselectAll();
+      updateSelectionButtons();
+
+      showProgress();
+      addProgressLine(`Re-enriching ${vins.length} VINs...`);
+
+      try {
+        const res = await fetch('/api/enrich-vins', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vins }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          addProgressLine(`Enriched ${data.enriched} of ${data.candidates} VINs`, 'done');
+          document.getElementById('progressSpinner').style.display = 'none';
+          document.getElementById('progressTitle').textContent = 'Re-enrichment complete';
+          loadListings();
+          hideProgress(5000);
+        } else {
+          addProgressLine('Failed: ' + (data.error || 'Unknown'), 'error');
+          document.getElementById('progressSpinner').style.display = 'none';
+          document.getElementById('progressTitle').textContent = 'Re-enrichment failed';
+          hideProgress(5000);
+        }
+      } catch (err) {
+        addProgressLine('Network error: ' + err.message, 'error');
+        document.getElementById('progressSpinner').style.display = 'none';
+        document.getElementById('progressTitle').textContent = 'Re-enrichment failed';
+        hideProgress(5000);
+      }
+    }
+
     const ALL_SOURCES = ["marketcheck", "auto.dev", "autotrader", "tesla", "truecar", "edmunds", "ebay", "cars.com", "cargurus"];
     let lastSourceCounts = {};
 
@@ -1000,7 +1212,10 @@
       }
     }
 
-    document.getElementById('showAll').addEventListener('change', loadListings);
+    document.getElementById('showAll').addEventListener('change', () => {
+      saveState();
+      loadListings();
+    });
 
     // --- Exclude feature ---
 
@@ -1476,8 +1691,7 @@
       return d.innerHTML;
     }
 
-    // Initial load
-    Promise.all([loadUrlOverrides(), loadListingOverrides()]).then(() => loadListings());
+    // Initial load (grid data + state restore handled in onGridReady)
     loadExcluded();
 
     // Auto-refresh every 5 minutes
