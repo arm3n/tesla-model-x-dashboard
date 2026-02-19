@@ -335,15 +335,19 @@ export function markInactive(activeVins: Set<string>): void {
   transaction();
 }
 
-export function getFilteredListings(): (Listing & { isFavorite: boolean })[] {
+export function getFilteredListings(): (Listing & { isFavorite: boolean; e_price: number | null; e_mileage: number | null; e_interiorColor: string | null; e_exteriorColor: string | null; e_imageUrl: string | null; e_dealerUrl: string | null; e_searchedAt: string | null })[] {
   const db = getDb();
   const rows = db
     .prepare(
       `
     SELECT l.*,
-      CASE WHEN f.vin IS NOT NULL THEN 1 ELSE 0 END AS isFavorite
+      CASE WHEN f.vin IS NOT NULL THEN 1 ELSE 0 END AS isFavorite,
+      e.price AS e_price, e.mileage AS e_mileage,
+      e.interiorColor AS e_interiorColor, e.exteriorColor AS e_exteriorColor,
+      e.imageUrl AS e_imageUrl, e.dealerUrl AS e_dealerUrl, e.searchedAt AS e_searchedAt
     FROM listings l
     LEFT JOIN favorites f ON l.vin = f.vin
+    LEFT JOIN enrichment_cache e ON l.vin = e.vin
     WHERE l.isActive = 1
       AND l.vin NOT IN (SELECT vin FROM excluded_vins)
       AND l.hw4Status IN ('confirmed', 'likely', 'uncertain', 'ask dealer')
@@ -358,24 +362,28 @@ export function getFilteredListings(): (Listing & { isFavorite: boolean })[] {
     ORDER BY isFavorite DESC, l.price ASC
   `
     )
-    .all() as (Listing & { isActive: number; isFavorite: number })[];
+    .all() as any[];
 
-  return rows.map((r) => ({ ...r, isActive: r.isActive === 1, isFavorite: r.isFavorite === 1 }));
+  return rows.map((r: any) => ({ ...r, isActive: r.isActive === 1, isFavorite: r.isFavorite === 1 }));
 }
 
-export function getAllListings(): (Listing & { isFavorite: boolean })[] {
+export function getAllListings(): (Listing & { isFavorite: boolean; e_price: number | null; e_mileage: number | null; e_interiorColor: string | null; e_exteriorColor: string | null; e_imageUrl: string | null; e_dealerUrl: string | null; e_searchedAt: string | null })[] {
   const db = getDb();
   const rows = db
     .prepare(`
       SELECT l.*,
-        CASE WHEN f.vin IS NOT NULL THEN 1 ELSE 0 END AS isFavorite
+        CASE WHEN f.vin IS NOT NULL THEN 1 ELSE 0 END AS isFavorite,
+        e.price AS e_price, e.mileage AS e_mileage,
+        e.interiorColor AS e_interiorColor, e.exteriorColor AS e_exteriorColor,
+        e.imageUrl AS e_imageUrl, e.dealerUrl AS e_dealerUrl, e.searchedAt AS e_searchedAt
       FROM listings l
       LEFT JOIN favorites f ON l.vin = f.vin
+      LEFT JOIN enrichment_cache e ON l.vin = e.vin
       WHERE l.isActive = 1
       ORDER BY isFavorite DESC, l.price ASC
     `)
-    .all() as (Listing & { isActive: number; isFavorite: number })[];
-  return rows.map((r) => ({ ...r, isActive: r.isActive === 1, isFavorite: r.isFavorite === 1 }));
+    .all() as any[];
+  return rows.map((r: any) => ({ ...r, isActive: r.isActive === 1, isFavorite: r.isFavorite === 1 }));
 }
 
 export function getExistingListingsMap(): Map<string, Listing> {
@@ -670,36 +678,21 @@ export function saveEnrichment(vin: string, data: EnrichmentData): void {
 /** Apply enrichment cache: fill blanks in listings from cached enrichment data */
 export function applyEnrichmentCache(): void {
   const db = getDb();
-  const rows = db.prepare('SELECT * FROM enrichment_cache').all() as any[];
-  if (rows.length === 0) return;
 
-  const update = db.prepare(`
+  // Single bulk UPDATE using JOIN against enrichment_cache (replaces N+1 loop)
+  db.exec(`
     UPDATE listings SET
-      price = CASE WHEN price = 0 AND $price IS NOT NULL AND $price > 0 THEN $price ELSE price END,
-      mileage = CASE WHEN mileage = 0 AND $mileage IS NOT NULL AND $mileage > 0 THEN $mileage ELSE mileage END,
-      interiorColor = CASE WHEN (interiorColor = '' OR interiorColor IS NULL) AND $interiorColor IS NOT NULL AND $interiorColor != '' THEN $interiorColor ELSE interiorColor END,
-      exteriorColor = CASE WHEN (exteriorColor = '' OR exteriorColor IS NULL) AND $exteriorColor IS NOT NULL AND $exteriorColor != '' THEN $exteriorColor ELSE exteriorColor END,
-      imageUrl = CASE WHEN (imageUrl IS NULL OR imageUrl = '') AND $imageUrl IS NOT NULL AND $imageUrl != '' THEN $imageUrl ELSE imageUrl END,
+      price = CASE WHEN listings.price = 0 AND e.price IS NOT NULL AND e.price > 0 THEN e.price ELSE listings.price END,
+      mileage = CASE WHEN listings.mileage = 0 AND e.mileage IS NOT NULL AND e.mileage > 0 THEN e.mileage ELSE listings.mileage END,
+      interiorColor = CASE WHEN (listings.interiorColor = '' OR listings.interiorColor IS NULL) AND e.interiorColor IS NOT NULL AND e.interiorColor != '' THEN e.interiorColor ELSE listings.interiorColor END,
+      exteriorColor = CASE WHEN (listings.exteriorColor = '' OR listings.exteriorColor IS NULL) AND e.exteriorColor IS NOT NULL AND e.exteriorColor != '' THEN e.exteriorColor ELSE listings.exteriorColor END,
+      imageUrl = CASE WHEN (listings.imageUrl IS NULL OR listings.imageUrl = '') AND e.imageUrl IS NOT NULL AND e.imageUrl != '' THEN e.imageUrl ELSE listings.imageUrl END,
       url = CASE
-        WHEN vin NOT IN (SELECT vin FROM url_overrides) AND $dealerUrl IS NOT NULL AND $dealerUrl != '' THEN $dealerUrl
-        ELSE url END
-    WHERE vin = $vin
+        WHEN listings.vin NOT IN (SELECT vin FROM url_overrides) AND e.dealerUrl IS NOT NULL AND e.dealerUrl != '' THEN e.dealerUrl
+        ELSE listings.url END
+    FROM enrichment_cache e
+    WHERE listings.vin = e.vin
   `);
-
-  const transaction = db.transaction(() => {
-    for (const r of rows) {
-      update.run({
-        $vin: r.vin,
-        $price: r.price,
-        $mileage: r.mileage,
-        $interiorColor: r.interiorColor,
-        $exteriorColor: r.exteriorColor,
-        $imageUrl: r.imageUrl,
-        $dealerUrl: r.dealerUrl,
-      });
-    }
-  });
-  transaction();
 }
 
 /** Get enrichment map: vin -> { fields enriched, values, dealerUrl, searchedAt } */
@@ -718,6 +711,21 @@ export function getEnrichmentMap(): Map<string, { fields: string[]; values: Reco
     map.set(r.vin, { fields, values, dealerUrl: r.dealerUrl || null, searchedAt: r.searchedAt });
   }
   return map;
+}
+
+/** Get enrichment data for a single VIN (avoids loading entire map) */
+export function getEnrichmentByVin(vin: string): { fields: string[]; values: Record<string, any>; dealerUrl: string | null; searchedAt: string } | null {
+  const db = getDb();
+  const r = db.prepare('SELECT * FROM enrichment_cache WHERE vin = ?').get(vin) as any;
+  if (!r) return null;
+  const fields: string[] = [];
+  const values: Record<string, any> = {};
+  if (r.price != null && r.price > 0) { fields.push('price'); values.price = r.price; }
+  if (r.mileage != null && r.mileage > 0) { fields.push('mileage'); values.mileage = r.mileage; }
+  if (r.interiorColor != null && r.interiorColor !== '') { fields.push('interiorColor'); values.interiorColor = r.interiorColor; }
+  if (r.exteriorColor != null && r.exteriorColor !== '') { fields.push('exteriorColor'); values.exteriorColor = r.exteriorColor; }
+  if (r.imageUrl != null && r.imageUrl !== '') { fields.push('imageUrl'); values.imageUrl = r.imageUrl; }
+  return { fields, values, dealerUrl: r.dealerUrl || null, searchedAt: r.searchedAt };
 }
 
 /** Delete enrichment cache rows for specific VINs (forces re-enrichment) */
@@ -799,22 +807,16 @@ export function purgeNonPlaid(): number {
   const nonPlaid = db.prepare(`SELECT vin FROM listings WHERE ${condition}`).all() as { vin: string }[];
   if (nonPlaid.length === 0) return 0;
 
-  const delFrom = (table: string) => db.prepare(`DELETE FROM ${table} WHERE vin = $vin`);
-  const stmts = [
-    delFrom("price_history"),
-    delFrom("enrichment_cache"),
-    delFrom("excluded_vins"),
-    delFrom("favorites"),
-    delFrom("hw4_overrides"),
-    delFrom("url_overrides"),
-    delFrom("listing_overrides"),
-    delFrom("listings"),
-  ];
+  const vins = nonPlaid.map(r => r.vin);
+  const tables = ["price_history", "enrichment_cache", "excluded_vins", "favorites", "hw4_overrides", "url_overrides", "listing_overrides", "listings"];
 
+  // Bulk DELETE using IN clause, chunked to stay under SQLite's 999 variable limit
   const purge = db.transaction(() => {
-    for (const { vin } of nonPlaid) {
-      for (const stmt of stmts) {
-        stmt.run({ $vin: vin });
+    for (let i = 0; i < vins.length; i += 500) {
+      const chunk = vins.slice(i, i + 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      for (const table of tables) {
+        db.prepare(`DELETE FROM ${table} WHERE vin IN (${placeholders})`).run(...chunk);
       }
     }
   });

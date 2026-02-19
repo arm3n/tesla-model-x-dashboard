@@ -1,5 +1,5 @@
 import { resolve } from "path";
-import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, insertScraperLog, updateListingFields, removeListingOverrides, getListingOverrides, getEnrichmentMap, purgeNonPlaid } from "./db.ts";
+import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, insertScraperLog, updateListingFields, removeListingOverrides, getListingOverrides, purgeNonPlaid } from "./db.ts";
 import { refresh, refreshVins } from "../scripts/refresh.ts";
 import type { ScraperStatus } from "../scripts/refresh.ts";
 import { runEnrichment, runEnrichmentForVins } from "./scraper/enrich.ts";
@@ -37,13 +37,23 @@ const server = Bun.serve({
     if (url.pathname === "/api/listings") {
       const showAll = url.searchParams.get("all") === "true";
       const listings = showAll ? getAllListings() : getFilteredListings();
-      const enrichmentMap = getEnrichmentMap();
       const enrichedListings = listings.map(l => {
-        const enrichment = enrichmentMap.get(l.vin);
+        // Build _enriched from JOIN columns (no separate getEnrichmentMap call)
+        const fields: string[] = [];
+        const values: Record<string, any> = {};
+        if (l.e_price != null && l.e_price > 0) { fields.push('price'); values.price = l.e_price; }
+        if (l.e_mileage != null && l.e_mileage > 0) { fields.push('mileage'); values.mileage = l.e_mileage; }
+        if (l.e_interiorColor != null && l.e_interiorColor !== '') { fields.push('interiorColor'); values.interiorColor = l.e_interiorColor; }
+        if (l.e_exteriorColor != null && l.e_exteriorColor !== '') { fields.push('exteriorColor'); values.exteriorColor = l.e_exteriorColor; }
+        if (l.e_imageUrl != null && l.e_imageUrl !== '') { fields.push('imageUrl'); values.imageUrl = l.e_imageUrl; }
+
+        // Strip enrichment columns from the listing payload
+        const { e_price, e_mileage, e_interiorColor, e_exteriorColor, e_imageUrl, e_dealerUrl, e_searchedAt, ...clean } = l;
+
         return {
-          ...l,
-          _enriched: enrichment && enrichment.fields.length > 0
-            ? { fields: enrichment.fields, values: enrichment.values, dealerUrl: enrichment.dealerUrl, searchedAt: enrichment.searchedAt }
+          ...clean,
+          _enriched: fields.length > 0
+            ? { fields, values, dealerUrl: e_dealerUrl || null, searchedAt: e_searchedAt || null }
             : null,
         };
       });

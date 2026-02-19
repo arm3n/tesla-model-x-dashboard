@@ -133,6 +133,7 @@ export async function scrapeEdmunds(
   // Stream stdout and parse per-page results incrementally
   const stdoutReader = proc.stdout.getReader();
   const stdoutDecoder = new TextDecoder();
+  const stdoutChunks: string[] = [];
   let stdoutBuf = "";
   const PAGE_START = "__EDMUNDS_PAGE_RESULTS__";
   const PAGE_END = "__END_PAGE__";
@@ -142,7 +143,8 @@ export async function scrapeEdmunds(
       while (true) {
         const { done, value } = await stdoutReader.read();
         if (done) break;
-        stdoutBuf += stdoutDecoder.decode(value, { stream: true });
+        stdoutChunks.push(stdoutDecoder.decode(value, { stream: true }));
+        stdoutBuf = stdoutChunks.join("");
 
         // Parse all complete page markers in the buffer
         let startIdx: number;
@@ -152,6 +154,8 @@ export async function scrapeEdmunds(
 
           const jsonStr = stdoutBuf.slice(startIdx + PAGE_START.length, endIdx);
           stdoutBuf = stdoutBuf.slice(endIdx + PAGE_END.length);
+          stdoutChunks.length = 0;
+          stdoutChunks.push(stdoutBuf);
 
           try {
             const items: any[] = JSON.parse(jsonStr);
@@ -276,6 +280,7 @@ export async function scrapeEdmundsVdp(
   // Stream stdout and parse per-VIN results
   const stdoutReader = proc.stdout.getReader();
   const stdoutDecoder = new TextDecoder();
+  const stdoutChunks: string[] = [];
   let stdoutBuf = "";
   const RESULT_START = "__VDP_RESULT__";
   const MISS_START = "__VDP_MISS__";
@@ -286,10 +291,10 @@ export async function scrapeEdmundsVdp(
       while (true) {
         const { done, value } = await stdoutReader.read();
         if (done) break;
-        stdoutBuf += stdoutDecoder.decode(value, { stream: true });
+        stdoutChunks.push(stdoutDecoder.decode(value, { stream: true }));
+        stdoutBuf = stdoutChunks.join("");
 
         // Parse complete markers
-        let idx: number;
         while (true) {
           const resultIdx = stdoutBuf.indexOf(RESULT_START);
           const missIdx = stdoutBuf.indexOf(MISS_START);
@@ -301,6 +306,8 @@ export async function scrapeEdmundsVdp(
             if (endIdx === -1) break;
             const jsonStr = stdoutBuf.slice(resultIdx + RESULT_START.length, endIdx);
             stdoutBuf = stdoutBuf.slice(endIdx + MARKER_END.length);
+            stdoutChunks.length = 0;
+            stdoutChunks.push(stdoutBuf);
             try {
               const item = JSON.parse(jsonStr);
               const parsed = parseItem(item);
@@ -313,6 +320,8 @@ export async function scrapeEdmundsVdp(
             if (endIdx === -1) break;
             const missVin = stdoutBuf.slice(missIdx + MISS_START.length, endIdx).trim();
             stdoutBuf = stdoutBuf.slice(endIdx + MARKER_END.length);
+            stdoutChunks.length = 0;
+            stdoutChunks.push(stdoutBuf);
             onProgress?.(`[Edmunds VDP] No data for ${missVin} (blocked or delisted)`);
           }
         }

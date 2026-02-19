@@ -153,6 +153,7 @@ export async function scrapeTesla(
   // Stream stdout and parse per-page results incrementally
   const stdoutReader = proc.stdout.getReader();
   const stdoutDecoder = new TextDecoder();
+  const stdoutChunks: string[] = [];
   let stdoutBuf = "";
   const PAGE_START = "__TESLA_PAGE_RESULTS__";
   const PAGE_END = "__END_PAGE__";
@@ -162,7 +163,8 @@ export async function scrapeTesla(
       while (true) {
         const { done, value } = await stdoutReader.read();
         if (done) break;
-        stdoutBuf += stdoutDecoder.decode(value, { stream: true });
+        stdoutChunks.push(stdoutDecoder.decode(value, { stream: true }));
+        stdoutBuf = stdoutChunks.join("");
 
         let startIdx: number;
         while ((startIdx = stdoutBuf.indexOf(PAGE_START)) !== -1) {
@@ -171,6 +173,8 @@ export async function scrapeTesla(
 
           const jsonStr = stdoutBuf.slice(startIdx + PAGE_START.length, endIdx);
           stdoutBuf = stdoutBuf.slice(endIdx + PAGE_END.length);
+          stdoutChunks.length = 0;
+          stdoutChunks.push(stdoutBuf);
 
           try {
             const items: any[] = JSON.parse(jsonStr);

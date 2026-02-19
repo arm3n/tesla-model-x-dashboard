@@ -1,4 +1,4 @@
-import { getEnrichmentCandidates, saveEnrichment, applyEnrichmentCache, clearEnrichmentCache, getListingsByVins, getEnrichmentMap, type EnrichmentData } from "../db.ts";
+import { getEnrichmentCandidates, saveEnrichment, applyEnrichmentCache, clearEnrichmentCache, getListingsByVins, getEnrichmentByVin, type EnrichmentData } from "../db.ts";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
@@ -514,8 +514,7 @@ async function enrichSingleVin(
 }
 
 function getEnrichmentDetails(vin: string): { vin: string; fields: string[]; dealerUrl: string | null } | null {
-  const map = getEnrichmentMap();
-  const entry = map.get(vin);
+  const entry = getEnrichmentByVin(vin);
   if (!entry || entry.fields.length === 0) return null;
   return { vin, fields: entry.fields, dealerUrl: entry.dealerUrl };
 }
