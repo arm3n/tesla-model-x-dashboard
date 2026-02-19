@@ -5,7 +5,7 @@ import { scrapeTesla } from "../src/scraper/tesla.ts";
 import { scrapeTrueCar } from "../src/scraper/truecar.ts";
 import { scrapeAutotrader } from "../src/scraper/autotrader.ts";
 import { scrapeEbayMotors } from "../src/scraper/ebay-motors.ts";
-import { scrapeEdmunds, scrapeEdmundsByVin } from "../src/scraper/edmunds.ts";
+import { scrapeEdmunds, scrapeEdmundsVdp } from "../src/scraper/edmunds.ts";
 import { scrapeAutoDev } from "../src/scraper/auto-dev.ts";
 import { normalize, filterListings } from "../src/normalize.ts";
 import {
@@ -334,29 +334,28 @@ export async function refreshVins(
     onScraperStatus?.(name, { status: "running", count: 0, startedAt: startMs });
 
     if (sourceKey === "edmunds") {
-      // Per-VIN Edmunds scrape via curl (fast — no browser needed)
-      const sourceRaw: RawListing[] = [];
-      let hasError = false;
-      for (const { vin, year } of sourceVins) {
-        log(`[Edmunds] Re-scraping VIN ${vin}...`);
-        try {
-          const result = await scrapeEdmundsByVin(vin, year);
-          if (result) {
-            sourceRaw.push(result);
-            allRaw.push(result);
-            onScraperStatus?.(name, { status: "running", count: sourceRaw.length, startedAt: startMs });
-            log(`[Edmunds] Got data for ${vin}`);
-          } else {
-            log(`[Edmunds] No data for ${vin} (blocked or not found)`);
+      // Per-VIN Edmunds scrape via nodriver (bypasses Akamai)
+      log(`[Edmunds] Re-scraping ${sourceVins.length} VIN(s) via VDP...`);
+      let vdpCount = 0;
+      try {
+        const sourceRaw = await scrapeEdmundsVdp(sourceVins, (msg) => {
+          log(msg);
+          if (msg.includes("Got data for")) {
+            vdpCount++;
+            onScraperStatus?.(name, { status: "running", count: vdpCount, startedAt: startMs });
           }
-        } catch (err) {
-          log(`[Edmunds] Error for ${vin}: ${err}`);
-          hasError = true;
-        }
+        });
+        allRaw.push(...sourceRaw);
+        const durationMs = Date.now() - startMs;
+        onScraperStatus?.(name, { status: "done", count: sourceRaw.length, startedAt: startMs, finishedAt: Date.now() });
+        logEntries.push({ scraper: name, sourceKey, raw: sourceRaw, status: "success", durationMs });
+        log(`[Edmunds] VDP re-scrape: ${sourceRaw.length}/${sourceVins.length} VIN(s) updated`);
+      } catch (err) {
+        const durationMs = Date.now() - startMs;
+        onScraperStatus?.(name, { status: "error", count: 0, startedAt: startMs, finishedAt: Date.now(), message: String(err).slice(0, 200) });
+        logEntries.push({ scraper: name, sourceKey, raw: [], status: "error", durationMs, error: String(err).slice(0, 200) });
+        log(`[Edmunds] VDP error: ${err}`);
       }
-      const durationMs = Date.now() - startMs;
-      onScraperStatus?.(name, { status: "done", count: sourceRaw.length, startedAt: startMs, finishedAt: Date.now() });
-      logEntries.push({ scraper: name, sourceKey, raw: sourceRaw, status: hasError && sourceRaw.length === 0 ? "error" : "success", durationMs });
     } else {
       if (!scraper) {
         log(`Unknown source: ${sourceKey}`);

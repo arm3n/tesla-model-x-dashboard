@@ -211,167 +211,125 @@ export async function scrapeEdmunds(
 }
 
 /**
- * Scrape a single Edmunds listing by VIN using curl on the VDP page.
- * Much faster than the full scraper — no browser, no pagination.
- * Returns null if blocked by Akamai or data can't be extracted.
+ * Batch-scrape Edmunds VDP pages using nodriver (undetected Chrome).
+ * Opens ONE browser session, visits each VIN's stored URL, extracts data.
+ * Much more reliable than curl for Akamai-protected pages.
  */
-export async function scrapeEdmundsByVin(
-  vin: string,
-  year: number
-): Promise<RawListing | null> {
-  const vdpUrl = `https://www.edmunds.com/tesla/model-x/${year}/vin/${vin}/`;
-  console.log(`[Edmunds] Fetching VDP for ${vin}`);
+export async function scrapeEdmundsVdp(
+  vins: { vin: string; year: number }[],
+  onProgress?: (msg: string) => void,
+): Promise<RawListing[]> {
+  if (vins.length === 0) return [];
 
-  const proc = Bun.spawn(
-    [
-      "curl", "-s", "-L",
-      "--max-time", "30",
-      "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "-H", "Accept-Language: en-US,en;q=0.9",
-      vdpUrl,
-    ],
-    { stdout: "pipe", stderr: "pipe" }
-  );
+  const VDP_SCRIPT = resolve(PROJECT_ROOT, "scripts/edmunds-vdp-fetch.py");
+  const args = vins.map(v => `${v.vin}:${v.year}`);
+  const msg = `[Edmunds VDP] Launching nodriver for ${vins.length} VIN(s)...`;
+  console.log(msg);
+  onProgress?.(msg);
 
-  const html = await new Response(proc.stdout).text();
-  await proc.exited;
+  const proc = Bun.spawn(["python", VDP_SCRIPT, ...args], {
+    cwd: PROJECT_ROOT,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env },
+  });
 
-  if (!html || html.length < 1000) {
-    console.log(`[Edmunds] VDP for ${vin}: empty/short response — likely blocked`);
-    return null;
-  }
+  // 120s timeout (generous — each VDP takes ~10-15s)
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+    const tmsg = "[Edmunds VDP] Timed out after 120s";
+    console.error(tmsg);
+    onProgress?.(tmsg);
+  }, 120_000);
 
-  // Check for Akamai block
-  if (html.includes("Access Denied") || html.includes("Reference #")) {
-    console.log(`[Edmunds] VDP for ${vin}: blocked by Akamai`);
-    return null;
-  }
+  const results: RawListing[] = [];
 
-  // Try __PRELOADED_STATE__ extraction
-  const marker = "window.__PRELOADED_STATE__";
-  const stateStart = html.indexOf(marker);
-  if (stateStart !== -1) {
+  // Stream stderr for progress
+  const stderrReader = proc.stderr.getReader();
+  const stderrDecoder = new TextDecoder();
+  let stderrBuf = "";
+  const stderrDone = (async () => {
     try {
-      const eqPos = html.indexOf("=", stateStart + marker.length);
-      if (eqPos !== -1) {
-        const scriptEnd = html.indexOf("</script>", eqPos);
-        if (scriptEnd !== -1) {
-          let jsonEnd = html.lastIndexOf(";", scriptEnd);
-          if (jsonEnd <= eqPos) jsonEnd = scriptEnd;
-          const jsonStr = html.slice(eqPos + 1, jsonEnd).trim();
-          const state = JSON.parse(jsonStr);
-
-          // SRP structure: inventory.searchResults.inventories.results[]
-          const srpResults = state?.inventory?.searchResults?.inventories?.results;
-          if (Array.isArray(srpResults)) {
-            for (const r of srpResults) {
-              if ((r.vin || "").toUpperCase() === vin.toUpperCase()) {
-                return parsePreloadedItem(r);
-              }
-            }
-          }
-
-          // VDP structure variations
-          for (const path of [
-            state?.inventoryDetail?.inventory,
-            state?.vehicleDetail?.inventory,
-            state?.inventory?.detail,
-          ]) {
-            if (path && (path.vin || "").toUpperCase() === vin.toUpperCase()) {
-              return parsePreloadedItem(path);
-            }
+      while (true) {
+        const { done, value } = await stderrReader.read();
+        if (done) break;
+        stderrBuf += stderrDecoder.decode(value, { stream: true });
+        let nlIdx;
+        while ((nlIdx = stderrBuf.indexOf("\n")) !== -1) {
+          const line = stderrBuf.slice(0, nlIdx).trim();
+          stderrBuf = stderrBuf.slice(nlIdx + 1);
+          if (line) {
+            console.log(line);
+            onProgress?.(line);
           }
         }
       }
-    } catch (err) {
-      console.error(`[Edmunds] VDP parse error for ${vin}:`, (err as Error).message);
-    }
-  }
+      if (stderrBuf.trim()) {
+        console.log(stderrBuf.trim());
+        onProgress?.(stderrBuf.trim());
+      }
+    } catch {}
+  })();
 
-  // Fallback: try JSON-LD structured data
-  return extractFromJsonLd(html, vin);
-}
+  // Stream stdout and parse per-VIN results
+  const stdoutReader = proc.stdout.getReader();
+  const stdoutDecoder = new TextDecoder();
+  let stdoutBuf = "";
+  const RESULT_START = "__VDP_RESULT__";
+  const MISS_START = "__VDP_MISS__";
+  const MARKER_END = "__END_VDP__";
 
-/** Parse a vehicle object from __PRELOADED_STATE__ into a RawListing */
-function parsePreloadedItem(r: any): RawListing | null {
-  const vi = r.vehicleInfo || {};
-  const si = vi.styleInfo || {};
-  const colors = vi.vehicleColors || {};
-  const dealer = r.dealerInfo || {};
-  const addr = dealer.address || {};
-  const prices = r.prices || {};
-  const history = r.historyInfo || {};
-
-  // Extract image URL from multiple possible paths
-  const photos = r.photoUrls || r.photos || vi.photoUrls || [];
-  let imageUrl: string | null = null;
-  if (Array.isArray(photos) && photos.length > 0) {
-    const first = photos[0];
-    imageUrl = typeof first === "string" ? first : (first?.url || first?.src || first?.href || null);
-  }
-  if (!imageUrl) {
-    const media = r.mediaData || vi.mediaData || {};
-    const thumbs = media.thumbnails || media.photos || [];
-    if (Array.isArray(thumbs) && thumbs.length > 0) {
-      const t = thumbs[0];
-      imageUrl = typeof t === "string" ? t : (t?.url || t?.src || null);
-    }
-  }
-
-  return parseItem({
-    vin: (r.vin || "").toUpperCase(),
-    price: prices.displayPrice || prices.advertisedPrice || 0,
-    mileage: vi.mileage || 0,
-    year: si.year || 0,
-    trim: si.trim || "",
-    numberOfSeats: si.numberOfSeats || null,
-    exteriorColor: colors.exterior?.name || "",
-    exteriorGenericColor: colors.exterior?.genericName || "",
-    interiorColor: colors.interior?.name || "",
-    interiorGenericColor: colors.interior?.genericName || "",
-    dealerName: dealer.name || "",
-    dealerCity: addr.city || "",
-    dealerState: addr.stateCode || "",
-    imageUrl,
-    firstPublishedDate: r.firstPublishedDate || null,
-    listedSince: r.listedSince || null,
-    cleanTitle: history.cleanTitle ?? null,
-    salvageHistory: history.salvageHistory ?? null,
-    lemonHistory: history.lemonHistory ?? null,
-    noAccidents: history.noAccidents ?? null,
-  });
-}
-
-/** Try extracting vehicle data from JSON-LD on the page */
-function extractFromJsonLd(html: string, vin: string): RawListing | null {
-  const ldMatches = html.matchAll(
-    /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi
-  );
-  for (const m of ldMatches) {
+  const stdoutDone = (async () => {
     try {
-      const ld = JSON.parse(m[1]);
-      const items = Array.isArray(ld) ? ld : [ld];
-      for (const item of items) {
-        if (item["@type"] === "Car" || item["@type"] === "Vehicle") {
-          const ldVin = (item.vehicleIdentificationNumber || "").toUpperCase();
-          if (ldVin === vin.toUpperCase()) {
-            return parseItem({
-              vin: ldVin,
-              price: parseInt(item.offers?.price || "0", 10),
-              mileage: parseInt(item.mileageFromOdometer?.value || "0", 10),
-              year: parseInt(item.modelDate || item.vehicleModelDate || "0", 10),
-              trim: item.vehicleConfiguration || "",
-              exteriorColor: item.color || "",
-              interiorColor: item.vehicleInteriorColor || "",
-              dealerName: item.offers?.seller?.name || "",
-              dealerCity: "",
-              dealerState: "",
-            });
+      while (true) {
+        const { done, value } = await stdoutReader.read();
+        if (done) break;
+        stdoutBuf += stdoutDecoder.decode(value, { stream: true });
+
+        // Parse complete markers
+        let idx: number;
+        while (true) {
+          const resultIdx = stdoutBuf.indexOf(RESULT_START);
+          const missIdx = stdoutBuf.indexOf(MISS_START);
+
+          // Find whichever marker comes first
+          if (resultIdx === -1 && missIdx === -1) break;
+          if (resultIdx !== -1 && (missIdx === -1 || resultIdx < missIdx)) {
+            const endIdx = stdoutBuf.indexOf(MARKER_END, resultIdx);
+            if (endIdx === -1) break;
+            const jsonStr = stdoutBuf.slice(resultIdx + RESULT_START.length, endIdx);
+            stdoutBuf = stdoutBuf.slice(endIdx + MARKER_END.length);
+            try {
+              const item = JSON.parse(jsonStr);
+              const parsed = parseItem(item);
+              if (parsed) results.push(parsed);
+            } catch (err) {
+              console.error("[Edmunds VDP] Parse error:", (err as Error).message);
+            }
+          } else if (missIdx !== -1) {
+            const endIdx = stdoutBuf.indexOf(MARKER_END, missIdx);
+            if (endIdx === -1) break;
+            const missVin = stdoutBuf.slice(missIdx + MISS_START.length, endIdx).trim();
+            stdoutBuf = stdoutBuf.slice(endIdx + MARKER_END.length);
+            onProgress?.(`[Edmunds VDP] No data for ${missVin} (blocked or delisted)`);
           }
         }
       }
     } catch {}
+  })();
+
+  await Promise.all([stderrDone, stdoutDone]);
+  await proc.exited;
+  clearTimeout(timer);
+
+  if (timedOut) {
+    console.log(`[Edmunds VDP] Timed out but collected ${results.length} partial results`);
+  } else {
+    console.log(`[Edmunds VDP] Done — ${results.length}/${vins.length} VINs fetched`);
   }
-  return null;
+
+  return results;
 }
+
