@@ -1093,13 +1093,19 @@
           const hasDone = data.entries.some(e => e.type === 'done');
           const hasError = data.entries.some(e => e.type === 'error');
 
+          // Detect operation type from log messages
+          const allMsgs = refreshLog.concat(data.entries).map(e => e.msg || '');
+          const isEnrich = allMsgs.some(m => m.includes('enrichment') || m.includes('Enrichment') || m.includes('enriching') || m.includes('Enriching'));
+          const isRescrape = allMsgs.some(m => m.includes('Re-scrap') || m.includes('re-scrap'));
+          const opLabel = isEnrich ? 'Enrichment' : isRescrape ? 'Re-scrape' : 'Refresh';
+
           if (hasDone) {
             document.getElementById('progressSpinner').style.display = 'none';
-            document.getElementById('progressTitle').textContent = 'Refresh complete';
+            document.getElementById('progressTitle').textContent = opLabel + ' complete';
             loadListings();
           } else if (hasError) {
             document.getElementById('progressSpinner').style.display = 'none';
-            document.getElementById('progressTitle').textContent = 'Refresh failed';
+            document.getElementById('progressTitle').textContent = opLabel + ' failed';
           }
 
           stopPolling();
@@ -1202,8 +1208,11 @@
       gridApi.deselectAll();
       updateSelectionButtons();
 
+      const btn = document.getElementById('refreshBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Enriching...';
       showProgress();
-      addProgressLine(`Re-enriching ${vins.length} VINs...`);
+      document.getElementById('progressTitle').textContent = `Enriching ${vins.length} VINs...`;
 
       try {
         const res = await fetch('/api/enrich-vins', {
@@ -1212,22 +1221,18 @@
           body: JSON.stringify({ vins }),
         });
         const data = await res.json();
-        if (data.success) {
-          addProgressLine(`Enriched ${data.enriched} of ${data.candidates} VINs`, 'done');
-          document.getElementById('progressSpinner').style.display = 'none';
-          document.getElementById('progressTitle').textContent = 'Re-enrichment complete';
-          loadListings();
-          hideProgress(5000);
-        } else {
+        if (!data.success) {
           addProgressLine('Failed: ' + (data.error || 'Unknown'), 'error');
-          document.getElementById('progressSpinner').style.display = 'none';
-          document.getElementById('progressTitle').textContent = 'Re-enrichment failed';
+          btn.disabled = false;
+          btn.textContent = 'Refresh Now';
           hideProgress(5000);
+          return;
         }
+        startPolling();
       } catch (err) {
         addProgressLine('Network error: ' + err.message, 'error');
-        document.getElementById('progressSpinner').style.display = 'none';
-        document.getElementById('progressTitle').textContent = 'Re-enrichment failed';
+        btn.disabled = false;
+        btn.textContent = 'Refresh Now';
         hideProgress(5000);
       }
     }
@@ -1736,23 +1741,35 @@
           const timeStr = ts.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
             + ' ' + ts.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
 
+          const logType = entries[0].type || 'refresh';
           const totalRaw = entries.reduce((s, e) => s + e.rawCount, 0);
           const totalDedup = entries.reduce((s, e) => s + e.dedupedCount, 0);
           const totalFiltered = entries.reduce((s, e) => s + e.filteredCount, 0);
           const errors = entries.filter(e => e.status === 'error').length;
           const totalDur = Math.max(...entries.map(e => e.durationMs));
 
+          const typeBadge = logType === 'rescrape'
+            ? '<span style="background:#1f3a5f;color:#58a6ff;padding:1px 6px;border-radius:3px;font-size:10px;margin-right:6px">RESCRAPE</span>'
+            : logType === 'enrich'
+            ? '<span style="background:#2a1f3a;color:#bc8cff;padding:1px 6px;border-radius:3px;font-size:10px;margin-right:6px">ENRICH</span>'
+            : '';
           const errorBadge = errors > 0 ? ` <span style="color:#f85149">${errors} error${errors > 1 ? 's' : ''}</span>` : '';
           const openClass = idx === 0 ? ' open' : '';
+
+          const isEnrich = logType === 'enrich';
+          const summaryText = isEnrich
+            ? `${totalRaw} candidates | ${totalDedup} searched | ${totalFiltered} enriched | ${(totalDur / 1000).toFixed(1)}s${errorBadge}`
+            : `${entries.length} sources | ${totalRaw} raw | ${totalDedup} deduped | ${totalFiltered} filtered | ${(totalDur / 1000).toFixed(1)}s${errorBadge}`;
 
           html += `<div class="log-group${openClass}" onclick="this.classList.toggle('open')">
             <div class="log-group-header">
               <span class="log-time">${timeStr}</span>
-              <span class="log-summary">${entries.length} sources | ${totalRaw} raw | ${totalDedup} deduped | ${totalFiltered} filtered | ${(totalDur / 1000).toFixed(1)}s${errorBadge}</span>
+              ${typeBadge}
+              <span class="log-summary">${summaryText}</span>
             </div>
             <div class="log-group-body" onclick="event.stopPropagation()">
               <div class="log-row header-row">
-                <span>Source</span><span>Status</span><span style="text-align:right">Raw</span><span style="text-align:right">Deduped</span><span style="text-align:right">Filtered</span><span style="text-align:right">Time</span><span>Error</span>
+                <span>Source</span><span>Status</span><span style="text-align:right">${isEnrich ? 'Candidates' : 'Raw'}</span><span style="text-align:right">${isEnrich ? 'Searched' : 'Deduped'}</span><span style="text-align:right">${isEnrich ? 'Enriched' : 'Filtered'}</span><span style="text-align:right">Time</span><span>Error</span>
               </div>`;
 
           for (const e of entries) {

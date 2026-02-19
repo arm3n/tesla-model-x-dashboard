@@ -1,8 +1,12 @@
 import { resolve } from "path";
-import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, updateListingFields, removeListingOverrides, getListingOverrides, getEnrichmentMap } from "./db.ts";
+import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, insertScraperLog, updateListingFields, removeListingOverrides, getListingOverrides, getEnrichmentMap, purgeNonPlaid } from "./db.ts";
 import { refresh, refreshVins } from "../scripts/refresh.ts";
 import type { ScraperStatus } from "../scripts/refresh.ts";
 import { runEnrichment, runEnrichmentForVins } from "./scraper/enrich.ts";
+
+// Purge non-Plaid listings on startup
+const purged = purgeNonPlaid();
+if (purged > 0) console.log(`[startup] Purged ${purged} non-Plaid listings from DB`);
 
 const PUBLIC_DIR = resolve(import.meta.dir, "../public");
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -238,17 +242,61 @@ const server = Bun.serve({
         return Response.json({ error: "Refresh in progress, try after it completes" }, { status: 409 });
       }
       refreshInProgress = true;
+      refreshLog = [];
+      refreshSeq++;
+      scraperStatuses = {};
+
+      const enrichId = `enrich-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const startMs = Date.now();
       logProgress("Starting VIN enrichment...");
-      try {
-        const result = await runEnrichment((msg) => logProgress(msg));
-        logProgress(`Enrichment done: ${result.enriched} enriched of ${result.candidates} candidates`, "done");
-        return Response.json({ success: true, ...result });
-      } catch (err) {
-        logProgress("Enrichment error: " + String(err), "error");
-        return Response.json({ error: String(err) }, { status: 500 });
-      } finally {
-        refreshInProgress = false;
-      }
+      updateScraperStatus("Enrichment", { status: "running", count: 0, startedAt: startMs });
+
+      runEnrichment((msg) => {
+        logProgress(msg);
+        // Parse enrichment progress from messages like "[enrich] VIN: enriched ..."
+        const enrichedMatch = msg.match(/enriched \(([^)]+)\)/);
+        if (enrichedMatch) {
+          const current = (scraperStatuses["Enrichment"]?.count || 0) + 1;
+          updateScraperStatus("Enrichment", { status: "running", count: current, startedAt: startMs, message: msg });
+        }
+      })
+        .then((result) => {
+          updateScraperStatus("Enrichment", { status: "done", count: result.enriched, startedAt: startMs, finishedAt: Date.now() });
+          logProgress(`Enrichment done: ${result.enriched} enriched of ${result.candidates} candidates`, "done");
+          insertScraperLog({
+            refreshId: enrichId,
+            source: "Enrichment",
+            status: "success",
+            rawCount: result.candidates,
+            dedupedCount: result.searched,
+            filteredCount: result.enriched,
+            errorMessage: null,
+            durationMs: Date.now() - startMs,
+            timestamp: new Date().toISOString(),
+            type: "enrich",
+          });
+        })
+        .catch((err) => {
+          updateScraperStatus("Enrichment", { status: "error", count: 0, startedAt: startMs, finishedAt: Date.now(), message: String(err).slice(0, 200) });
+          logProgress("Enrichment error: " + String(err), "error");
+          insertScraperLog({
+            refreshId: enrichId,
+            source: "Enrichment",
+            status: "error",
+            rawCount: 0,
+            dedupedCount: 0,
+            filteredCount: 0,
+            errorMessage: String(err).slice(0, 500),
+            durationMs: Date.now() - startMs,
+            timestamp: new Date().toISOString(),
+            type: "enrich",
+          });
+        })
+        .finally(() => {
+          refreshInProgress = false;
+        });
+
+      return Response.json({ success: true, message: "Enrichment started" });
     }
 
     // Targeted VIN enrichment (re-enrich specific VINs)
@@ -260,18 +308,63 @@ const server = Bun.serve({
       if (!body.vins || !Array.isArray(body.vins) || body.vins.length === 0) {
         return Response.json({ error: "vins array required" }, { status: 400 });
       }
+
       refreshInProgress = true;
-      logProgress(`Starting targeted enrichment for ${body.vins.length} VINs...`);
-      try {
-        const result = await runEnrichmentForVins(body.vins, (msg) => logProgress(msg));
-        logProgress(`Targeted enrichment done: ${result.enriched} enriched of ${result.candidates} VINs`, "done");
-        return Response.json({ success: true, ...result });
-      } catch (err) {
-        logProgress("Enrichment error: " + String(err), "error");
-        return Response.json({ error: String(err) }, { status: 500 });
-      } finally {
-        refreshInProgress = false;
-      }
+      refreshLog = [];
+      refreshSeq++;
+      scraperStatuses = {};
+
+      const enrichId = `enrich-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const startMs = Date.now();
+      const vinCount = body.vins.length;
+      logProgress(`Starting targeted enrichment for ${vinCount} VINs...`);
+      updateScraperStatus("Enrichment", { status: "running", count: 0, startedAt: startMs });
+
+      runEnrichmentForVins(body.vins, (msg) => {
+        logProgress(msg);
+        const enrichedMatch = msg.match(/enriched \(([^)]+)\)/);
+        if (enrichedMatch) {
+          const current = (scraperStatuses["Enrichment"]?.count || 0) + 1;
+          updateScraperStatus("Enrichment", { status: "running", count: current, startedAt: startMs, message: msg });
+        }
+      })
+        .then((result) => {
+          updateScraperStatus("Enrichment", { status: "done", count: result.enriched, startedAt: startMs, finishedAt: Date.now() });
+          logProgress(`Targeted enrichment done: ${result.enriched} enriched of ${result.candidates} VINs`, "done");
+          insertScraperLog({
+            refreshId: enrichId,
+            source: "Enrichment",
+            status: "success",
+            rawCount: result.candidates,
+            dedupedCount: result.searched,
+            filteredCount: result.enriched,
+            errorMessage: null,
+            durationMs: Date.now() - startMs,
+            timestamp: new Date().toISOString(),
+            type: "enrich",
+          });
+        })
+        .catch((err) => {
+          updateScraperStatus("Enrichment", { status: "error", count: 0, startedAt: startMs, finishedAt: Date.now(), message: String(err).slice(0, 200) });
+          logProgress("Enrichment error: " + String(err), "error");
+          insertScraperLog({
+            refreshId: enrichId,
+            source: "Enrichment",
+            status: "error",
+            rawCount: 0,
+            dedupedCount: 0,
+            filteredCount: 0,
+            errorMessage: String(err).slice(0, 500),
+            durationMs: Date.now() - startMs,
+            timestamp: new Date().toISOString(),
+            type: "enrich",
+          });
+        })
+        .finally(() => {
+          refreshInProgress = false;
+        });
+
+      return Response.json({ success: true, message: "Enrichment started" });
     }
 
     if (url.pathname === "/api/refresh" && req.method === "POST") {
@@ -311,7 +404,7 @@ const server = Bun.serve({
         const label = `${vins.length} VIN(s)`;
         logProgress(`Re-scraping ${label}...`);
 
-        refreshVins(vins, (msg) => logProgress(msg))
+        refreshVins(vins, (msg) => logProgress(msg), updateScraperStatus)
           .then((count) => {
             logProgress(`Done! Re-scraped ${count} listing(s)`, "done");
           })

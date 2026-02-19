@@ -129,6 +129,9 @@ export function getDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_scraper_logs_ts ON scraper_logs(timestamp)
   `);
 
+  // Migration: add type column to scraper_logs (refresh/rescrape/enrich)
+  try { _db.exec("ALTER TABLE scraper_logs ADD COLUMN type TEXT NOT NULL DEFAULT 'refresh'"); } catch {}
+
   _db.exec(`
     CREATE TABLE IF NOT EXISTS enrichment_cache (
       vin TEXT PRIMARY KEY,
@@ -500,20 +503,21 @@ export function isFavorite(vin: string): boolean {
 export interface ScraperLogEntry {
   refreshId: string;
   source: string;
-  status: "success" | "error" | "skipped";
+  status: "success" | "error" | "skipped" | "timeout";
   rawCount: number;
   dedupedCount: number;
   filteredCount: number;
   errorMessage: string | null;
   durationMs: number;
   timestamp: string;
+  type: "refresh" | "rescrape" | "enrich";
 }
 
 export function insertScraperLog(entry: ScraperLogEntry): void {
   const db = getDb();
   db.prepare(`
-    INSERT INTO scraper_logs (refreshId, source, status, rawCount, dedupedCount, filteredCount, errorMessage, durationMs, timestamp)
-    VALUES ($refreshId, $source, $status, $rawCount, $dedupedCount, $filteredCount, $errorMessage, $durationMs, $timestamp)
+    INSERT INTO scraper_logs (refreshId, source, status, rawCount, dedupedCount, filteredCount, errorMessage, durationMs, timestamp, type)
+    VALUES ($refreshId, $source, $status, $rawCount, $dedupedCount, $filteredCount, $errorMessage, $durationMs, $timestamp, $type)
   `).run({
     $refreshId: entry.refreshId,
     $source: entry.source,
@@ -524,13 +528,15 @@ export function insertScraperLog(entry: ScraperLogEntry): void {
     $errorMessage: entry.errorMessage,
     $durationMs: entry.durationMs,
     $timestamp: entry.timestamp,
+    $type: entry.type || "refresh",
   });
 }
 
 export function getScraperLogs(limit: number = 50): ScraperLogEntry[] {
   const db = getDb();
   return db.prepare(`
-    SELECT refreshId, source, status, rawCount, dedupedCount, filteredCount, errorMessage, durationMs, timestamp
+    SELECT refreshId, source, status, rawCount, dedupedCount, filteredCount, errorMessage, durationMs, timestamp,
+           COALESCE(type, 'refresh') as type
     FROM scraper_logs
     ORDER BY timestamp DESC, id DESC
     LIMIT $limit
@@ -767,4 +773,45 @@ export function applyListingOverrides(): void {
     }
   });
   transaction();
+}
+
+// --- Purge non-Plaid listings ---
+
+/**
+ * Delete all non-Plaid listings from the DB and all related tables.
+ * VIN position 8 (1-indexed): '6' = Plaid, '5' = Long Range.
+ */
+export function purgeNonPlaid(): number {
+  const db = getDb();
+
+  const condition = `
+    (length(vin) = 17 AND substr(vin, 4, 1) = 'X' AND substr(vin, 8, 1) != '6')
+    OR (trim != '' AND trim IS NOT NULL AND trim != 'Plaid')
+  `;
+
+  const nonPlaid = db.prepare(`SELECT vin FROM listings WHERE ${condition}`).all() as { vin: string }[];
+  if (nonPlaid.length === 0) return 0;
+
+  const delFrom = (table: string) => db.prepare(`DELETE FROM ${table} WHERE vin = $vin`);
+  const stmts = [
+    delFrom("price_history"),
+    delFrom("enrichment_cache"),
+    delFrom("excluded_vins"),
+    delFrom("favorites"),
+    delFrom("hw4_overrides"),
+    delFrom("url_overrides"),
+    delFrom("listing_overrides"),
+    delFrom("listings"),
+  ];
+
+  const purge = db.transaction(() => {
+    for (const { vin } of nonPlaid) {
+      for (const stmt of stmts) {
+        stmt.run({ $vin: vin });
+      }
+    }
+  });
+  purge();
+
+  return nonPlaid.length;
 }

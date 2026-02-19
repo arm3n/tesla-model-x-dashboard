@@ -232,12 +232,16 @@ export async function refresh(
   stats.total = normalized.length;
   log(`${normalized.length} unique listings after deduplication`);
 
-  const filtered = filterListings(normalized);
+  // Remove non-Plaid before upserting (VIN-based trim is authoritative)
+  const plaidOnly = normalized.filter(l => !l.trim || l.trim === "Plaid");
+  log(`${plaidOnly.length} Plaid listings (${normalized.length - plaidOnly.length} non-Plaid removed)`);
+
+  const filtered = filterListings(plaidOnly);
   stats.filtered = filtered.length;
   log(`${filtered.length} listings match filters (HW4 + 6-seat + clean title + no accidents)`);
 
   log("Saving to database...");
-  upsertListings(normalized);
+  upsertListings(plaidOnly);
 
   // Mark vehicles no longer found by any scraper as inactive (sold/delisted).
   // Only on full refreshes — partial refreshes shouldn't deactivate other sources' VINs.
@@ -262,7 +266,7 @@ export async function refresh(
 
   const dedupBySource: Record<string, number> = {};
   const filtBySource: Record<string, number> = {};
-  for (const l of normalized) dedupBySource[l.source] = (dedupBySource[l.source] || 0) + 1;
+  for (const l of plaidOnly) dedupBySource[l.source] = (dedupBySource[l.source] || 0) + 1;
   for (const l of filtered) filtBySource[l.source] = (filtBySource[l.source] || 0) + 1;
 
   // Write scraper logs
@@ -279,6 +283,7 @@ export async function refresh(
       errorMessage: entry.error || (entry.status === "timeout" ? `Timed out after ${entry.scraper.timeout / 1000}s` : null),
       durationMs: entry.durationMs,
       timestamp: ts,
+      type: "refresh",
     });
   }
 
@@ -295,7 +300,8 @@ export async function refresh(
  */
 export async function refreshVins(
   vins: { vin: string; year: number; source: string }[],
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  onScraperStatus?: ScraperStatusCallback,
 ): Promise<number> {
   const log = (msg: string) => {
     console.log(msg);
@@ -310,30 +316,52 @@ export async function refreshVins(
     bySource.get(key)!.push({ vin: v.vin, year: v.year });
   }
 
+  const rescrapeId = `rescrape-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const allRaw: RawListing[] = [];
+  const logEntries: { scraper: string; sourceKey: string; raw: RawListing[]; status: "success" | "error"; durationMs: number; error?: string }[] = [];
+
+  // Initialize scraper statuses
+  for (const [sourceKey] of bySource) {
+    const scraper = SCRAPERS.find((s) => s.key === sourceKey);
+    const name = scraper?.name ?? sourceKey;
+    onScraperStatus?.(name, { status: "pending", count: 0, startedAt: Date.now() });
+  }
 
   for (const [sourceKey, sourceVins] of bySource) {
+    const scraper = SCRAPERS.find((s) => s.key === sourceKey);
+    const name = scraper?.name ?? sourceKey;
+    const startMs = Date.now();
+    onScraperStatus?.(name, { status: "running", count: 0, startedAt: startMs });
+
     if (sourceKey === "edmunds") {
       // Per-VIN Edmunds scrape via curl (fast — no browser needed)
+      const sourceRaw: RawListing[] = [];
+      let hasError = false;
       for (const { vin, year } of sourceVins) {
         log(`[Edmunds] Re-scraping VIN ${vin}...`);
         try {
           const result = await scrapeEdmundsByVin(vin, year);
           if (result) {
+            sourceRaw.push(result);
             allRaw.push(result);
+            onScraperStatus?.(name, { status: "running", count: sourceRaw.length, startedAt: startMs });
             log(`[Edmunds] Got data for ${vin}`);
           } else {
             log(`[Edmunds] No data for ${vin} (blocked or not found)`);
           }
         } catch (err) {
           log(`[Edmunds] Error for ${vin}: ${err}`);
+          hasError = true;
         }
       }
+      const durationMs = Date.now() - startMs;
+      onScraperStatus?.(name, { status: "done", count: sourceRaw.length, startedAt: startMs, finishedAt: Date.now() });
+      logEntries.push({ scraper: name, sourceKey, raw: sourceRaw, status: hasError && sourceRaw.length === 0 ? "error" : "success", durationMs });
     } else {
-      // For other sources, run the full scraper and filter to requested VINs
-      const scraper = SCRAPERS.find((s) => s.key === sourceKey);
       if (!scraper) {
         log(`Unknown source: ${sourceKey}`);
+        onScraperStatus?.(name, { status: "error", count: 0, startedAt: startMs, finishedAt: Date.now(), message: "Unknown source" });
+        logEntries.push({ scraper: name, sourceKey, raw: [], status: "error", durationMs: Date.now() - startMs, error: "Unknown source" });
         continue;
       }
       log(`[${scraper.name}] Running scraper for ${sourceVins.length} VIN(s)...`);
@@ -342,10 +370,14 @@ export async function refreshVins(
         const vinSet = new Set(sourceVins.map((v) => v.vin.toUpperCase()));
         const matched = results.filter((r) => vinSet.has(r.vin.toUpperCase()));
         allRaw.push(...matched);
-        log(
-          `[${scraper.name}] Found ${matched.length}/${sourceVins.length} requested VIN(s)`
-        );
+        const durationMs = Date.now() - startMs;
+        onScraperStatus?.(name, { status: "done", count: matched.length, startedAt: startMs, finishedAt: Date.now() });
+        logEntries.push({ scraper: name, sourceKey, raw: matched, status: "success", durationMs });
+        log(`[${scraper.name}] Found ${matched.length}/${sourceVins.length} requested VIN(s)`);
       } catch (err) {
+        const durationMs = Date.now() - startMs;
+        onScraperStatus?.(name, { status: "error", count: 0, startedAt: startMs, finishedAt: Date.now(), message: String(err).slice(0, 200) });
+        logEntries.push({ scraper: name, sourceKey, raw: [], status: "error", durationMs, error: String(err).slice(0, 200) });
         log(`[${scraper.name}] Error: ${err}`);
       }
     }
@@ -353,18 +385,52 @@ export async function refreshVins(
 
   if (allRaw.length === 0) {
     log("No results to update.");
+    // Still write scraper logs even with 0 results
+    const ts = new Date().toISOString();
+    for (const entry of logEntries) {
+      insertScraperLog({
+        refreshId: rescrapeId,
+        source: entry.scraper,
+        status: entry.status,
+        rawCount: entry.raw.length,
+        dedupedCount: 0,
+        filteredCount: 0,
+        errorMessage: entry.error || null,
+        durationMs: entry.durationMs,
+        timestamp: ts,
+        type: "rescrape",
+      });
+    }
     return 0;
   }
 
-  // Normalize and upsert
+  // Normalize and upsert (Plaid only)
   const existing = getExistingListingsMap();
   const normalized = await normalize(allRaw, existing);
-  log(`Upserting ${normalized.length} listing(s)...`);
-  upsertListings(normalized);
+  const plaidOnly = normalized.filter(l => !l.trim || l.trim === "Plaid");
+  log(`Upserting ${plaidOnly.length} listing(s)...`);
+  upsertListings(plaidOnly);
   applyEnrichmentCache();
   applyListingOverrides();
 
-  return normalized.length;
+  // Write scraper logs
+  const ts = new Date().toISOString();
+  for (const entry of logEntries) {
+    insertScraperLog({
+      refreshId: rescrapeId,
+      source: entry.scraper,
+      status: entry.status,
+      rawCount: entry.raw.length,
+      dedupedCount: entry.raw.length, // rescrape targets specific VINs, no dedup
+      filteredCount: entry.raw.length,
+      errorMessage: entry.error || null,
+      durationMs: entry.durationMs,
+      timestamp: ts,
+      type: "rescrape",
+    });
+  }
+
+  return plaidOnly.length;
 }
 
 // Run directly
