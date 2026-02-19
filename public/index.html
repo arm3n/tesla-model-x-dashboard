@@ -1282,7 +1282,11 @@
         });
         const data = await res.json();
         if (data.inProgress) {
-          addProgressLine('Refresh already in progress, showing live status...');
+          addProgressLine('Another refresh is already running — please wait for it to finish.', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Refresh Now';
+          hideProgress(5000);
+          return;
         } else if (!data.success) {
           addProgressLine('Failed to start refresh: ' + (data.error || 'Unknown'), 'error');
           btn.disabled = false;
