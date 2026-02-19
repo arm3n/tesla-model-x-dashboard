@@ -252,19 +252,25 @@ export function upsertListings(listings: Listing[]): void {
     INSERT INTO price_history (vin, price, date) VALUES ($vin, $price, $date)
   `);
 
-  const getExisting = db.prepare(`
-    SELECT price FROM listings WHERE vin = $vin
-  `);
-
   const now = new Date().toISOString();
+
+  // Bulk-fetch existing prices into a Map (eliminates N+1 SELECT per listing)
+  const existingPrices = new Map<string, number>();
+  const vins = listings.map(l => l.vin);
+  for (let i = 0; i < vins.length; i += 500) {
+    const chunk = vins.slice(i, i + 500);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT vin, price FROM listings WHERE vin IN (${placeholders})`).all(...chunk) as { vin: string; price: number }[];
+    for (const r of rows) {
+      existingPrices.set(r.vin, r.price);
+    }
+  }
 
   const transaction = db.transaction(() => {
     for (const listing of listings) {
-      // Check if price changed
-      const existing = getExisting.get({ $vin: listing.vin }) as
-        | { price: number }
-        | undefined;
-      if (existing && existing.price !== listing.price) {
+      // Check if price changed (using pre-fetched Map instead of per-row SELECT)
+      const existingPrice = existingPrices.get(listing.vin);
+      if (existingPrice !== undefined && existingPrice !== listing.price) {
         insertPrice.run({
           $vin: listing.vin,
           $price: listing.price,

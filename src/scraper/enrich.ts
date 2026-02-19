@@ -25,8 +25,39 @@ const SKIP_DOMAINS = new Set([
 const MAX_VINS_PER_RUN = 25;
 const BRAVE_DELAY_MS = 1100; // Brave free tier: 1 req/sec
 const FETCH_DELAY_MS = 500;
+const ENRICH_CONCURRENCY = 3; // Concurrent VIN enrichments
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Brave rate limiter: ensures max 1 request per BRAVE_DELAY_MS globally
+let _lastBraveCall = 0;
+async function braveRateLimit(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - _lastBraveCall;
+  if (elapsed < BRAVE_DELAY_MS) {
+    await sleep(BRAVE_DELAY_MS - elapsed);
+  }
+  _lastBraveCall = Date.now();
+}
+
+// Simple concurrency limiter (no dependency needed)
+function pLimit(concurrency: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const queue: (() => void)[] = [];
+  return <T>(fn: () => Promise<T>): Promise<T> => {
+    return new Promise<T>((resolve, reject) => {
+      const run = () => {
+        active++;
+        fn().then(resolve, reject).finally(() => {
+          active--;
+          if (queue.length > 0) queue.shift()!();
+        });
+      };
+      if (active < concurrency) run();
+      else queue.push(run);
+    });
+  };
+}
 
 function isDealerDomain(urlStr: string): boolean {
   try {
@@ -52,6 +83,8 @@ function extractDomain(urlStr: string): string {
 /** Use Brave Search API to find the dealer's website */
 async function findDealerDomain(dealerName: string, dealerLocation: string): Promise<string | null> {
   if (!BRAVE_API_KEY) return null;
+
+  await braveRateLimit(); // Global rate limiter for concurrent access
 
   const query = encodeURIComponent(`${dealerName} ${dealerLocation} dealer`);
   const url = `https://api.search.brave.com/res/v1/web/search?q=${query}&count=5`;
@@ -84,6 +117,8 @@ async function findDealerDomain(dealerName: string, dealerLocation: string): Pro
 /** Search Brave for a VIN on a specific dealer domain — returns ALL matching URLs (best first) */
 async function findVinUrlsOnDealerSite(dealerDomain: string, vin: string): Promise<string[]> {
   if (!BRAVE_API_KEY) return [];
+
+  await braveRateLimit(); // Global rate limiter for concurrent access
 
   const host = new URL(dealerDomain).hostname;
   const query = encodeURIComponent(`${vin} site:${host}`);
@@ -405,7 +440,6 @@ async function enrichSingleVin(
   } else {
     dealerDomain = await findDealerDomain(c.dealerName, c.dealerLocation);
     dealerDomainCache.set(cacheKey, dealerDomain);
-    await sleep(BRAVE_DELAY_MS);
   }
 
   if (!dealerDomain) {
@@ -418,7 +452,6 @@ async function enrichSingleVin(
 
   // Step 2a: Search Brave for VIN on the dealer's domain (returns multiple URLs, VDP-like first)
   const vinUrls = await findVinUrlsOnDealerSite(dealerDomain, c.vin);
-  await sleep(BRAVE_DELAY_MS);
 
   let data: EnrichmentData | null = null;
 
@@ -507,17 +540,19 @@ export async function runEnrichment(onProgress?: EnrichProgressCallback): Promis
   let enriched = 0;
   const details: EnrichResult["details"] = [];
   const dealerDomainCache = new Map<string, string | null>();
+  const limit = pLimit(ENRICH_CONCURRENCY);
 
-  for (const c of toSearch) {
+  const tasks = toSearch.map(c => limit(async () => {
     searched++;
     const found = await enrichSingleVin(c, dealerDomainCache, log);
     if (found) {
       enriched++;
-      // Read back what was saved to report fields
       const saved = getEnrichmentDetails(c.vin);
       if (saved) details.push(saved);
     }
-  }
+  }));
+
+  await Promise.all(tasks);
 
   applyEnrichmentCache();
   log(`[enrich] Done. Searched ${searched}, enriched ${enriched} of ${candidates.length} candidates`);
@@ -548,8 +583,9 @@ export async function runEnrichmentForVins(vins: string[], onProgress?: EnrichPr
   let enriched = 0;
   const details: EnrichResult["details"] = [];
   const dealerDomainCache = new Map<string, string | null>();
+  const limit = pLimit(ENRICH_CONCURRENCY);
 
-  for (const c of listings) {
+  const tasks = listings.map(c => limit(async () => {
     searched++;
     const found = await enrichSingleVin(c, dealerDomainCache, log);
     if (found) {
@@ -557,7 +593,9 @@ export async function runEnrichmentForVins(vins: string[], onProgress?: EnrichPr
       const saved = getEnrichmentDetails(c.vin);
       if (saved) details.push(saved);
     }
-  }
+  }));
+
+  await Promise.all(tasks);
 
   applyEnrichmentCache();
   log(`[enrich] Done. Searched ${searched}, enriched ${enriched} of ${listings.length} VINs`);
