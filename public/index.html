@@ -652,6 +652,7 @@
     let autoRefreshTimer = null;
     let pollTimer = null;
     let lastPollTime = 0;
+    let currentOpType = 'Refresh'; // tracks current operation for completion message
 
     const currencyFmt = new Intl.NumberFormat('en-US', {
       style: 'currency', currency: 'USD', maximumFractionDigits: 0
@@ -1090,23 +1091,18 @@
           btn.disabled = false;
           btn.textContent = 'Refresh Now';
 
-          const hasDone = data.entries.some(e => e.type === 'done');
-          const hasError = data.entries.some(e => e.type === 'error');
+          // Check all entries from this poll (the "done" msg may have arrived in an earlier poll)
+          const allProgress = document.getElementById('progressLog');
+          const hasDone = allProgress?.querySelector('.done') || data.entries.some(e => e.type === 'done');
+          const hasError = !hasDone && (allProgress?.querySelector('.error') || data.entries.some(e => e.type === 'error'));
 
-          // Detect operation type from log messages
-          const allMsgs = refreshLog.concat(data.entries).map(e => e.msg || '');
-          const isEnrich = allMsgs.some(m => m.includes('enrichment') || m.includes('Enrichment') || m.includes('enriching') || m.includes('Enriching'));
-          const isRescrape = allMsgs.some(m => m.includes('Re-scrap') || m.includes('re-scrap'));
-          const opLabel = isEnrich ? 'Enrichment' : isRescrape ? 'Re-scrape' : 'Refresh';
-
-          if (hasDone) {
-            document.getElementById('progressSpinner').style.display = 'none';
-            document.getElementById('progressTitle').textContent = opLabel + ' complete';
-            loadListings();
-          } else if (hasError) {
-            document.getElementById('progressSpinner').style.display = 'none';
-            document.getElementById('progressTitle').textContent = opLabel + ' failed';
+          document.getElementById('progressSpinner').style.display = 'none';
+          if (hasError) {
+            document.getElementById('progressTitle').textContent = currentOpType + ' failed';
+          } else {
+            document.getElementById('progressTitle').textContent = currentOpType + ' complete';
           }
+          loadListings();
 
           stopPolling();
           hideProgress(5000);
@@ -1176,6 +1172,7 @@
       const btn = document.getElementById('refreshBtn');
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span>Re-scraping...';
+      currentOpType = 'Re-scrape';
       showProgress();
 
       try {
@@ -1211,6 +1208,7 @@
       const btn = document.getElementById('refreshBtn');
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span>Enriching...';
+      currentOpType = 'Enrichment';
       showProgress();
       document.getElementById('progressTitle').textContent = `Enriching ${vins.length} VINs...`;
 
@@ -1286,6 +1284,7 @@
       const btn = document.getElementById('refreshBtn');
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span>Refreshing...';
+      currentOpType = 'Refresh';
       showProgress();
 
       try {
