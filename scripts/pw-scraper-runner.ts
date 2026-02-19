@@ -53,6 +53,5 @@ async function run() {
 
 run().catch((err) => {
   console.error(`[pw-runner] Fatal error running ${scraperName}:`, err);
-  process.stdout.write("\n__PW_RESULTS_START__\n[]\n__PW_RESULTS_END__\n");
-  process.exit(0); // exit 0 so the parent doesn't crash
+  process.exit(1);
 });

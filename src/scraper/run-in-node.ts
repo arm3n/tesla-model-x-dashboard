@@ -11,72 +11,108 @@ const __dir =
 const PROJECT_ROOT = resolve(__dir, "../..");
 const RUNNER_SCRIPT = resolve(PROJECT_ROOT, "scripts/pw-scraper-runner.ts");
 
+const MAX_RETRIES = 1;
+const SUSPECT_DURATION_MS = 2000; // 0 results in under 2s is suspicious
+
 /**
  * Runs a Playwright scraper in a Node.js subprocess (via tsx).
  * This is necessary because Bun cannot launch Playwright browsers.
  * This function is only called from Bun — in Node.js the scrapers run directly.
+ *
+ * Throws on failure so the refresh pipeline can log it as an error.
+ * Retries once if the subprocess fails or returns 0 results suspiciously fast.
  */
 export async function runScraperInNode(
   scraperName: string
 ): Promise<RawListing[]> {
-  console.log(`[${scraperName}] Delegating to Node.js subprocess...`);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const label = attempt > 0 ? `[${scraperName}] (retry ${attempt})` : `[${scraperName}]`;
+    console.log(`${label} Delegating to Node.js subprocess...`);
 
-  const proc = Bun.spawn(["npx", "tsx", RUNNER_SCRIPT, scraperName], {
-    cwd: PROJECT_ROOT,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env },
-  });
+    const startMs = Date.now();
+    const proc = Bun.spawn(["npx", "tsx", RUNNER_SCRIPT, scraperName], {
+      cwd: PROJECT_ROOT,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env },
+    });
 
-  // 55s timeout — kill subprocess before the 60s refresh-level timeout
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    proc.kill();
-    console.error(`[${scraperName}] Timed out after 55s — killed subprocess`);
-  }, 55_000);
+    // 55s timeout — kill subprocess before the 60s refresh-level timeout
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, 55_000);
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
 
-  await proc.exited;
-  clearTimeout(timer);
+    const exitCode = await proc.exited;
+    clearTimeout(timer);
+    const durationMs = Date.now() - startMs;
 
-  if (timedOut) return [];
-
-  // Log stderr (contains console.log output from the scraper)
-  if (stderr.trim()) {
-    for (const line of stderr.trim().split("\n")) {
-      console.log(line);
+    // Log stderr (contains console.log output from the scraper)
+    if (stderr.trim()) {
+      for (const line of stderr.trim().split("\n")) {
+        console.log(line);
+      }
     }
-  }
 
-  // Extract JSON results between markers
-  const startMarker = "__PW_RESULTS_START__";
-  const endMarker = "__PW_RESULTS_END__";
-  const startIdx = stdout.indexOf(startMarker);
-  const endIdx = stdout.indexOf(endMarker);
+    if (timedOut) {
+      throw new Error(`Subprocess timed out after 55s`);
+    }
 
-  if (startIdx === -1 || endIdx === -1) {
-    console.error(
-      `[${scraperName}] No results markers found in output. stdout tail:`,
-      stdout.slice(-500)
-    );
-    return [];
-  }
+    if (exitCode !== 0) {
+      const errTail = stderr.trim().slice(-300);
+      if (attempt < MAX_RETRIES) {
+        console.log(`${label} Subprocess exited with code ${exitCode}, retrying...`);
+        continue;
+      }
+      throw new Error(`Subprocess exited with code ${exitCode}: ${errTail}`);
+    }
 
-  const jsonStr = stdout.slice(startIdx + startMarker.length, endIdx).trim();
+    // Extract JSON results between markers
+    const startMarker = "__PW_RESULTS_START__";
+    const endMarker = "__PW_RESULTS_END__";
+    const startIdx = stdout.indexOf(startMarker);
+    const endIdx = stdout.indexOf(endMarker);
 
-  try {
-    const results = JSON.parse(jsonStr) as RawListing[];
+    if (startIdx === -1 || endIdx === -1) {
+      const outTail = stdout.slice(-300);
+      if (attempt < MAX_RETRIES) {
+        console.log(`${label} No result markers in output, retrying...`);
+        continue;
+      }
+      throw new Error(`No result markers in subprocess output. tail: ${outTail}`);
+    }
+
+    const jsonStr = stdout.slice(startIdx + startMarker.length, endIdx).trim();
+
+    let results: RawListing[];
+    try {
+      results = JSON.parse(jsonStr) as RawListing[];
+    } catch (err) {
+      if (attempt < MAX_RETRIES) {
+        console.log(`${label} Failed to parse JSON, retrying...`);
+        continue;
+      }
+      throw new Error(`Failed to parse subprocess JSON: ${(err as Error).message}`);
+    }
+
+    // 0 results in under 2s is suspicious — likely a silent failure
+    if (results.length === 0 && durationMs < SUSPECT_DURATION_MS) {
+      if (attempt < MAX_RETRIES) {
+        console.log(`${label} 0 results in ${durationMs}ms (suspicious), retrying...`);
+        continue;
+      }
+      throw new Error(`0 results in ${durationMs}ms — likely failed silently`);
+    }
+
     return results;
-  } catch (err) {
-    console.error(
-      `[${scraperName}] Failed to parse JSON results:`,
-      (err as Error).message
-    );
-    return [];
   }
+
+  // Unreachable, but satisfy TypeScript
+  return [];
 }

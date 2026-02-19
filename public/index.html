@@ -532,7 +532,6 @@
     <div class="stat">Avg Price: <span class="stat-value" id="statAvg">--</span></div>
     <div class="stat">Price Range: <span class="stat-value" id="statRange">--</span></div>
     <div class="stat">HW4 Confirmed: <span class="stat-value" id="statConfirmed">0</span></div>
-    <div class="stat">6-Seat: <span class="stat-value" id="statSixSeat">0</span></div>
     <div class="stat">Favorites: <span class="stat-value" id="statFavorites">0</span></div>
     <div class="stat" id="statSourcesWrap">Sources: <span id="statSources">loading...</span></div>
   </div>
@@ -609,10 +608,8 @@
         <label class="edit-field"><span>Price</span><input type="number" id="editPrice" min="0" /></label>
         <label class="edit-field"><span>Mileage</span><input type="number" id="editMileage" min="0" /></label>
         <label class="edit-field"><span>Year</span><input type="number" id="editYear" min="2020" max="2026" /></label>
-        <label class="edit-field"><span>Trim</span><input type="text" id="editTrim" /></label>
         <label class="edit-field"><span>Ext. Color</span><input type="text" id="editExtColor" /></label>
         <label class="edit-field"><span>Int. Color</span><input type="text" id="editIntColor" /></label>
-        <label class="edit-field"><span>Seats</span><input type="number" id="editSeats" min="5" max="7" /></label>
         <label class="edit-field">
           <span>Title Status</span>
           <select id="editTitle">
@@ -710,7 +707,6 @@
         }
       },
       { headerName: 'Year', field: 'year', width: 80, filter: 'agNumberColumnFilter' },
-      { headerName: 'Trim', field: 'trim', width: 140, filter: 'agTextColumnFilter' },
       {
         headerName: 'Price',
         field: 'price',
@@ -752,16 +748,6 @@
           'cell-enriched': (p) => p.data?._enriched?.fields?.includes('interiorColor') && !listingOverrides.get(p.data?.vin)?.fields?.interiorColor,
         },
         tooltipValueGetter: (p) => enrichTooltip(p.data, 'interiorColor'),
-      },
-      {
-        headerName: 'Seats',
-        field: 'seatCount',
-        width: 80,
-        filter: 'agNumberColumnFilter',
-        cellRenderer: (p) => {
-          if (p.value == null) return '<span class="badge badge-unknown">Unknown</span>';
-          return String(p.value);
-        }
       },
       {
         headerName: 'HW4',
@@ -1133,8 +1119,6 @@
 
         document.getElementById('statConfirmed').textContent =
           listings.filter(l => l.hw4Status === 'confirmed').length;
-        document.getElementById('statSixSeat').textContent =
-          listings.filter(l => l.seatCount === 6).length;
         document.getElementById('statFavorites').textContent =
           listings.filter(l => l.isFavorite).length;
 
@@ -1143,7 +1127,6 @@
         document.getElementById('statAvg').textContent = '--';
         document.getElementById('statRange').textContent = '--';
         document.getElementById('statConfirmed').textContent = '0';
-        document.getElementById('statSixSeat').textContent = '0';
         document.getElementById('statFavorites').textContent = '0';
         document.getElementById('statSources').textContent = '--';
         loadSources();
@@ -1522,10 +1505,8 @@
       document.getElementById('editPrice').value = d.price || '';
       document.getElementById('editMileage').value = d.mileage || '';
       document.getElementById('editYear').value = d.year || '';
-      document.getElementById('editTrim').value = d.trim || '';
       document.getElementById('editExtColor').value = d.exteriorColor || '';
       document.getElementById('editIntColor').value = d.interiorColor || '';
-      document.getElementById('editSeats').value = d.seatCount != null ? d.seatCount : '';
       document.getElementById('editTitle').value = d.titleStatus || '';
       document.getElementById('editAccidents').value = d.accidentHistory || 'unknown';
       document.getElementById('editDealer').value = d.dealerName || '';
@@ -1535,8 +1516,8 @@
       const override = listingOverrides.get(vin);
       const overriddenFields = override ? Object.keys(override.fields) : [];
       const fieldMap = {
-        price: 'editPrice', mileage: 'editMileage', year: 'editYear', trim: 'editTrim',
-        exteriorColor: 'editExtColor', interiorColor: 'editIntColor', seatCount: 'editSeats',
+        price: 'editPrice', mileage: 'editMileage', year: 'editYear',
+        exteriorColor: 'editExtColor', interiorColor: 'editIntColor',
         titleStatus: 'editTitle', accidentHistory: 'editAccidents',
         dealerName: 'editDealer', dealerLocation: 'editLocation',
       };
@@ -1563,8 +1544,6 @@
       const price = parseInt(document.getElementById('editPrice').value, 10);
       const mileage = parseInt(document.getElementById('editMileage').value, 10);
       const year = parseInt(document.getElementById('editYear').value, 10);
-      const seats = document.getElementById('editSeats').value ? parseInt(document.getElementById('editSeats').value, 10) : null;
-      const trim = document.getElementById('editTrim').value.trim();
       const extColor = document.getElementById('editExtColor').value.trim();
       const intColor = document.getElementById('editIntColor').value.trim();
       const titleStatus = document.getElementById('editTitle').value || null;
@@ -1575,10 +1554,8 @@
       if (!isNaN(price) && price !== editOriginalData.price) fields.price = price;
       if (!isNaN(mileage) && mileage !== editOriginalData.mileage) fields.mileage = mileage;
       if (!isNaN(year) && year !== editOriginalData.year) fields.year = year;
-      if (trim !== (editOriginalData.trim || '')) fields.trim = trim;
       if (extColor !== (editOriginalData.exteriorColor || '')) fields.exteriorColor = extColor;
       if (intColor !== (editOriginalData.interiorColor || '')) fields.interiorColor = intColor;
-      if (seats !== editOriginalData.seatCount) fields.seatCount = seats;
       if (titleStatus !== (editOriginalData.titleStatus || null)) fields.titleStatus = titleStatus;
       if (accidents !== (editOriginalData.accidentHistory || 'unknown')) fields.accidentHistory = accidents;
       if (dealer !== (editOriginalData.dealerName || '')) fields.dealerName = dealer;
