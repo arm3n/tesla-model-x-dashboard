@@ -43,7 +43,7 @@ const server = Bun.serve({
         return {
           ...l,
           _enriched: enrichment && enrichment.fields.length > 0
-            ? { fields: enrichment.fields, dealerUrl: enrichment.dealerUrl, searchedAt: enrichment.searchedAt }
+            ? { fields: enrichment.fields, values: enrichment.values, dealerUrl: enrichment.dealerUrl, searchedAt: enrichment.searchedAt }
             : null,
         };
       });
@@ -263,6 +263,10 @@ const server = Bun.serve({
         .then((result) => {
           updateScraperStatus("Enrichment", { status: "done", count: result.enriched, startedAt: startMs, finishedAt: Date.now() });
           logProgress(`Enrichment done: ${result.enriched} enriched of ${result.candidates} candidates`, "done");
+          // Build per-VIN detail summary for the log
+          const detailStr = result.details.length > 0
+            ? result.details.map(d => `${d.vin}: ${d.fields.join(', ')}${d.dealerUrl ? ' (' + d.dealerUrl + ')' : ''}`).join('; ')
+            : null;
           insertScraperLog({
             refreshId: enrichId,
             source: "Enrichment",
@@ -270,7 +274,7 @@ const server = Bun.serve({
             rawCount: result.candidates,
             dedupedCount: result.searched,
             filteredCount: result.enriched,
-            errorMessage: null,
+            errorMessage: detailStr,
             durationMs: Date.now() - startMs,
             timestamp: new Date().toISOString(),
             type: "enrich",
@@ -331,6 +335,9 @@ const server = Bun.serve({
         .then((result) => {
           updateScraperStatus("Enrichment", { status: "done", count: result.enriched, startedAt: startMs, finishedAt: Date.now() });
           logProgress(`Targeted enrichment done: ${result.enriched} enriched of ${result.candidates} VINs`, "done");
+          const detailStr = result.details.length > 0
+            ? result.details.map(d => `${d.vin}: ${d.fields.join(', ')}${d.dealerUrl ? ' (' + d.dealerUrl + ')' : ''}`).join('; ')
+            : null;
           insertScraperLog({
             refreshId: enrichId,
             source: "Enrichment",
@@ -338,7 +345,7 @@ const server = Bun.serve({
             rawCount: result.candidates,
             dedupedCount: result.searched,
             filteredCount: result.enriched,
-            errorMessage: null,
+            errorMessage: detailStr,
             durationMs: Date.now() - startMs,
             timestamp: new Date().toISOString(),
             type: "enrich",

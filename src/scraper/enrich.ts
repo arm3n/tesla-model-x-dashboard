@@ -1,4 +1,4 @@
-import { getEnrichmentCandidates, saveEnrichment, applyEnrichmentCache, clearEnrichmentCache, getListingsByVins, type EnrichmentData } from "../db.ts";
+import { getEnrichmentCandidates, saveEnrichment, applyEnrichmentCache, clearEnrichmentCache, getListingsByVins, getEnrichmentMap, type EnrichmentData } from "../db.ts";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
@@ -379,6 +379,7 @@ export interface EnrichResult {
   candidates: number;
   searched: number;
   enriched: number;
+  details: { vin: string; fields: string[]; dealerUrl: string | null }[];
 }
 
 /** Enrich a single VIN — returns true if data was found */
@@ -479,6 +480,13 @@ async function enrichSingleVin(
   }
 }
 
+function getEnrichmentDetails(vin: string): { vin: string; fields: string[]; dealerUrl: string | null } | null {
+  const map = getEnrichmentMap();
+  const entry = map.get(vin);
+  if (!entry || entry.fields.length === 0) return null;
+  return { vin, fields: entry.fields, dealerUrl: entry.dealerUrl };
+}
+
 /** Run VIN enrichment: find dealer sites, search for VINs, extract data */
 export async function runEnrichment(onProgress?: EnrichProgressCallback): Promise<EnrichResult> {
   const log = (msg: string) => {
@@ -497,18 +505,24 @@ export async function runEnrichment(onProgress?: EnrichProgressCallback): Promis
 
   let searched = 0;
   let enriched = 0;
+  const details: EnrichResult["details"] = [];
   const dealerDomainCache = new Map<string, string | null>();
 
   for (const c of toSearch) {
     searched++;
     const found = await enrichSingleVin(c, dealerDomainCache, log);
-    if (found) enriched++;
+    if (found) {
+      enriched++;
+      // Read back what was saved to report fields
+      const saved = getEnrichmentDetails(c.vin);
+      if (saved) details.push(saved);
+    }
   }
 
   applyEnrichmentCache();
   log(`[enrich] Done. Searched ${searched}, enriched ${enriched} of ${candidates.length} candidates`);
 
-  return { candidates: candidates.length, searched, enriched };
+  return { candidates: candidates.length, searched, enriched, details };
 }
 
 /** Run enrichment for specific VINs (clears cache first to force re-search) */
@@ -532,16 +546,21 @@ export async function runEnrichmentForVins(vins: string[], onProgress?: EnrichPr
 
   let searched = 0;
   let enriched = 0;
+  const details: EnrichResult["details"] = [];
   const dealerDomainCache = new Map<string, string | null>();
 
   for (const c of listings) {
     searched++;
     const found = await enrichSingleVin(c, dealerDomainCache, log);
-    if (found) enriched++;
+    if (found) {
+      enriched++;
+      const saved = getEnrichmentDetails(c.vin);
+      if (saved) details.push(saved);
+    }
   }
 
   applyEnrichmentCache();
   log(`[enrich] Done. Searched ${searched}, enriched ${enriched} of ${listings.length} VINs`);
 
-  return { candidates: listings.length, searched, enriched };
+  return { candidates: listings.length, searched, enriched, details };
 }

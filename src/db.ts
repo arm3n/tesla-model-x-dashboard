@@ -696,19 +696,20 @@ export function applyEnrichmentCache(): void {
   transaction();
 }
 
-/** Get enrichment map: vin -> { fields enriched, dealerUrl, searchedAt } */
-export function getEnrichmentMap(): Map<string, { fields: string[]; dealerUrl: string | null; searchedAt: string }> {
+/** Get enrichment map: vin -> { fields enriched, values, dealerUrl, searchedAt } */
+export function getEnrichmentMap(): Map<string, { fields: string[]; values: Record<string, any>; dealerUrl: string | null; searchedAt: string }> {
   const db = getDb();
   const rows = db.prepare('SELECT * FROM enrichment_cache').all() as any[];
-  const map = new Map<string, { fields: string[]; dealerUrl: string | null; searchedAt: string }>();
+  const map = new Map<string, { fields: string[]; values: Record<string, any>; dealerUrl: string | null; searchedAt: string }>();
   for (const r of rows) {
     const fields: string[] = [];
-    if (r.price != null && r.price > 0) fields.push('price');
-    if (r.mileage != null && r.mileage > 0) fields.push('mileage');
-    if (r.interiorColor != null && r.interiorColor !== '') fields.push('interiorColor');
-    if (r.exteriorColor != null && r.exteriorColor !== '') fields.push('exteriorColor');
-    if (r.imageUrl != null && r.imageUrl !== '') fields.push('imageUrl');
-    map.set(r.vin, { fields, dealerUrl: r.dealerUrl || null, searchedAt: r.searchedAt });
+    const values: Record<string, any> = {};
+    if (r.price != null && r.price > 0) { fields.push('price'); values.price = r.price; }
+    if (r.mileage != null && r.mileage > 0) { fields.push('mileage'); values.mileage = r.mileage; }
+    if (r.interiorColor != null && r.interiorColor !== '') { fields.push('interiorColor'); values.interiorColor = r.interiorColor; }
+    if (r.exteriorColor != null && r.exteriorColor !== '') { fields.push('exteriorColor'); values.exteriorColor = r.exteriorColor; }
+    if (r.imageUrl != null && r.imageUrl !== '') { fields.push('imageUrl'); values.imageUrl = r.imageUrl; }
+    map.set(r.vin, { fields, values, dealerUrl: r.dealerUrl || null, searchedAt: r.searchedAt });
   }
   return map;
 }

@@ -658,6 +658,29 @@
       style: 'currency', currency: 'USD', maximumFractionDigits: 0
     });
 
+    function enrichTooltip(data, field) {
+      if (!data?._enriched?.fields?.includes(field)) return null;
+      if (listingOverrides.get(data?.vin)?.fields?.[field]) return null;
+      const e = data._enriched;
+      const lines = ['Enriched from dealer site'];
+      if (e.dealerUrl) lines[0] = 'Enriched from ' + e.dealerUrl;
+      // Show all enriched fields with values
+      const labels = { price: 'Price', mileage: 'Mileage', interiorColor: 'Int. Color', exteriorColor: 'Ext. Color', imageUrl: 'Image' };
+      for (const f of e.fields) {
+        const v = e.values?.[f];
+        let display = v;
+        if (f === 'price' && v) display = '$' + Number(v).toLocaleString();
+        else if (f === 'mileage' && v) display = Number(v).toLocaleString() + ' mi';
+        else if (f === 'imageUrl') display = 'yes';
+        lines.push((f === field ? '> ' : '  ') + (labels[f] || f) + ': ' + (display || '?'));
+      }
+      if (e.searchedAt) {
+        const d = new Date(e.searchedAt);
+        lines.push('Searched: ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }));
+      }
+      return lines.join('\n');
+    }
+
     const numFmt = new Intl.NumberFormat('en-US');
 
     const HW4_CYCLE = ['confirmed', 'likely', 'uncertain', 'ask dealer', 'no'];
@@ -697,12 +720,7 @@
         cellClassRules: {
           'cell-enriched': (p) => p.data?._enriched?.fields?.includes('price') && !listingOverrides.get(p.data?.vin)?.fields?.price,
         },
-        tooltipValueGetter: (p) => {
-          if (p.data?._enriched?.fields?.includes('price') && !listingOverrides.get(p.data?.vin)?.fields?.price) {
-            return 'Enriched from ' + (p.data._enriched.dealerUrl || 'dealer site');
-          }
-          return null;
-        },
+        tooltipValueGetter: (p) => enrichTooltip(p.data, 'price'),
       },
       {
         headerName: 'Mileage',
@@ -713,12 +731,7 @@
         cellClassRules: {
           'cell-enriched': (p) => p.data?._enriched?.fields?.includes('mileage') && !listingOverrides.get(p.data?.vin)?.fields?.mileage,
         },
-        tooltipValueGetter: (p) => {
-          if (p.data?._enriched?.fields?.includes('mileage') && !listingOverrides.get(p.data?.vin)?.fields?.mileage) {
-            return 'Enriched from ' + (p.data._enriched.dealerUrl || 'dealer site');
-          }
-          return null;
-        },
+        tooltipValueGetter: (p) => enrichTooltip(p.data, 'mileage'),
       },
       {
         headerName: 'Ext. Color',
@@ -728,12 +741,7 @@
         cellClassRules: {
           'cell-enriched': (p) => p.data?._enriched?.fields?.includes('exteriorColor') && !listingOverrides.get(p.data?.vin)?.fields?.exteriorColor,
         },
-        tooltipValueGetter: (p) => {
-          if (p.data?._enriched?.fields?.includes('exteriorColor') && !listingOverrides.get(p.data?.vin)?.fields?.exteriorColor) {
-            return 'Enriched from ' + (p.data._enriched.dealerUrl || 'dealer site');
-          }
-          return null;
-        },
+        tooltipValueGetter: (p) => enrichTooltip(p.data, 'exteriorColor'),
       },
       {
         headerName: 'Int. Color',
@@ -743,12 +751,7 @@
         cellClassRules: {
           'cell-enriched': (p) => p.data?._enriched?.fields?.includes('interiorColor') && !listingOverrides.get(p.data?.vin)?.fields?.interiorColor,
         },
-        tooltipValueGetter: (p) => {
-          if (p.data?._enriched?.fields?.includes('interiorColor') && !listingOverrides.get(p.data?.vin)?.fields?.interiorColor) {
-            return 'Enriched from ' + (p.data._enriched.dealerUrl || 'dealer site');
-          }
-          return null;
-        },
+        tooltipValueGetter: (p) => enrichTooltip(p.data, 'interiorColor'),
       },
       {
         headerName: 'Seats',
@@ -1779,7 +1782,19 @@
               : e.status === 'success' ? (e.rawCount > 0 ? 'OK' : 'OK (0)')
               : 'ERROR';
             const durStr = (e.durationMs / 1000).toFixed(1) + 's';
-            const errStr = e.errorMessage ? `<span class="log-error-msg">${escHtml(e.errorMessage.slice(0, 200))}</span>` : '';
+
+            // For enrich logs, errorMessage contains per-VIN details (not errors)
+            let detailHtml = '';
+            if (isEnrich && e.status === 'success' && e.errorMessage) {
+              // Parse "VIN: field1, field2 (url); VIN2: ..." format
+              const vinDetails = e.errorMessage.split('; ').map(part => {
+                const escaped = escHtml(part);
+                return `<div style="color:#8b949e;font-size:11px;padding:1px 0;margin-left:8px">${escaped}</div>`;
+              }).join('');
+              detailHtml = vinDetails;
+            } else if (e.errorMessage) {
+              detailHtml = `<span class="log-error-msg">${escHtml(e.errorMessage.slice(0, 200))}</span>`;
+            }
 
             html += `<div class="log-row">
               <span>${escHtml(e.source)}</span>
@@ -1788,7 +1803,7 @@
               <span class="log-num">${e.dedupedCount}</span>
               <span class="log-num">${e.filteredCount}</span>
               <span class="log-dur">${durStr}</span>
-              <span>${errStr}</span>
+              <span>${detailHtml}</span>
             </div>`;
           }
 
