@@ -45,6 +45,7 @@ export function getDb(): Database {
   try { _db.exec("ALTER TABLE listings ADD COLUMN accidentHistory TEXT NOT NULL DEFAULT 'unknown'"); } catch {}
   try { _db.exec("ALTER TABLE listings ADD COLUMN completeness_score INTEGER NOT NULL DEFAULT 0"); } catch {}
   try { _db.exec("ALTER TABLE listings ADD COLUMN url_verified INTEGER NOT NULL DEFAULT 0"); } catch {}
+  try { _db.exec("ALTER TABLE listings ADD COLUMN possiblySold TEXT"); } catch {}
 
   _db.exec(`
     CREATE TABLE IF NOT EXISTS price_history (
@@ -245,7 +246,8 @@ export function upsertListings(listings: Listing[]): void {
         ELSE COALESCE(listings.accidentHistory, 'unknown')
       END,
       completeness_score = CASE WHEN ${NEW_WINS} THEN $completenessScore ELSE listings.completeness_score END,
-      url_verified = CASE WHEN ${NEW_WINS} THEN $urlVerified ELSE listings.url_verified END
+      url_verified = CASE WHEN ${NEW_WINS} THEN $urlVerified ELSE listings.url_verified END,
+      possiblySold = NULL
   `);
 
   const insertPrice = db.prepare(`
@@ -333,6 +335,31 @@ export function markInactive(activeVins: Set<string>): void {
   });
 
   transaction();
+}
+
+export function markPossiblySold(vins: string[]): void {
+  if (vins.length === 0) return;
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    for (let i = 0; i < vins.length; i += 500) {
+      const chunk = vins.slice(i, i + 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      db.prepare(`UPDATE listings SET possiblySold = ? WHERE vin IN (${placeholders}) AND possiblySold IS NULL`).run(now, ...chunk);
+    }
+  })();
+}
+
+export function clearPossiblySold(vins: string[]): void {
+  if (vins.length === 0) return;
+  const db = getDb();
+  db.transaction(() => {
+    for (let i = 0; i < vins.length; i += 500) {
+      const chunk = vins.slice(i, i + 500);
+      const placeholders = chunk.map(() => '?').join(',');
+      db.prepare(`UPDATE listings SET possiblySold = NULL WHERE vin IN (${placeholders})`).run(...chunk);
+    }
+  })();
 }
 
 export function getFilteredListings(): (Listing & { isFavorite: boolean; e_price: number | null; e_mileage: number | null; e_interiorColor: string | null; e_exteriorColor: string | null; e_imageUrl: string | null; e_dealerUrl: string | null; e_searchedAt: string | null })[] {

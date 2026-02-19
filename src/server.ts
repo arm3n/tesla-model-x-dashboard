@@ -1,5 +1,5 @@
 import { resolve } from "path";
-import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, insertScraperLog, updateListingFields, removeListingOverrides, getListingOverrides, purgeNonPlaid } from "./db.ts";
+import { getFilteredListings, getAllListings, excludeVin, unexcludeVin, getExcludedVins, setHw4Override, setUrlOverride, removeUrlOverride, getUrlOverrides, favoriteVin, unfavoriteVin, getFavorites, getScraperLogs, insertScraperLog, updateListingFields, removeListingOverrides, getListingOverrides, purgeNonPlaid, markPossiblySold } from "./db.ts";
 import { refresh, refreshVins } from "../scripts/refresh.ts";
 import type { ScraperStatus } from "../scripts/refresh.ts";
 import { runEnrichment, runEnrichmentForVins } from "./scraper/enrich.ts";
@@ -422,8 +422,72 @@ const server = Bun.serve({
         logProgress(`Re-scraping ${label}...`);
 
         refreshVins(vins, (msg) => logProgress(msg), updateScraperStatus)
-          .then((count) => {
-            logProgress(`Done! Re-scraped ${count} listing(s)`, "done");
+          .then(async (result) => {
+            if (result.missing.length === 0) {
+              logProgress(`Done! Re-scraped ${result.updated} listing(s)`, "done");
+              return;
+            }
+
+            // Auto-enrich missing VINs — verify against dealer sites before marking sold
+            const autoEnrichId = `auto-enrich-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const autoEnrichStart = Date.now();
+            logProgress(`${result.missing.length} VIN(s) not found by scraper — checking dealer sites...`);
+            try {
+              const enrichResult = await runEnrichmentForVins(result.missing, (msg) => logProgress(msg));
+              const enrichedVins = new Set(enrichResult.details.map(d => d.vin));
+              const stillMissing = result.missing.filter(v => !enrichedVins.has(v));
+
+              if (stillMissing.length > 0) {
+                markPossiblySold(stillMissing);
+                logProgress(`Marked ${stillMissing.length} VIN(s) as possibly sold: ${stillMissing.join(", ")}`);
+              }
+              if (enrichedVins.size > 0) {
+                logProgress(`${enrichedVins.size} VIN(s) still found on dealer sites — updated data`);
+              }
+
+              // Write scraper log for the auto-enrich step
+              const detailParts: string[] = [];
+              for (const d of enrichResult.details) {
+                detailParts.push(`${d.vin}: ${d.fields.join(", ")}${d.dealerUrl ? " (" + d.dealerUrl + ")" : ""}`);
+              }
+              if (stillMissing.length > 0) {
+                detailParts.push(`POSSIBLY SOLD: ${stillMissing.join(", ")}`);
+              }
+              insertScraperLog({
+                refreshId: autoEnrichId,
+                source: "Auto-Enrich (sold check)",
+                status: "success",
+                rawCount: result.missing.length,
+                dedupedCount: enrichResult.searched,
+                filteredCount: enrichResult.enriched,
+                errorMessage: detailParts.length > 0 ? detailParts.join("; ") : null,
+                durationMs: Date.now() - autoEnrichStart,
+                timestamp: new Date().toISOString(),
+                type: "enrich",
+              });
+
+              let msg = `Done! Re-scraped ${result.updated} listing(s)`;
+              if (stillMissing.length > 0) {
+                msg += ` — ${stillMissing.length} possibly sold`;
+              }
+              logProgress(msg, "done");
+            } catch (err) {
+              // Enrichment failed — still mark as possibly sold based on scraper miss alone
+              markPossiblySold(result.missing);
+              insertScraperLog({
+                refreshId: autoEnrichId,
+                source: "Auto-Enrich (sold check)",
+                status: "error",
+                rawCount: result.missing.length,
+                dedupedCount: 0,
+                filteredCount: 0,
+                errorMessage: `Failed: ${String(err).slice(0, 300)}; marked ${result.missing.length} VIN(s) as possibly sold`,
+                durationMs: Date.now() - autoEnrichStart,
+                timestamp: new Date().toISOString(),
+                type: "enrich",
+              });
+              logProgress(`Enrichment check failed (${String(err).slice(0, 100)}) — marked ${result.missing.length} VIN(s) as possibly sold`, "done");
+            }
           })
           .catch((err) => {
             logProgress("Error: " + String(err), "error");

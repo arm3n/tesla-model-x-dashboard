@@ -205,6 +205,10 @@
     .badge-accident { background: #da3633; color: #ffd8d8; }
     .badge-branded { background: #da3633; color: #ffd8d8; }
     .badge-salvage { background: #8b0000; color: #ffd8d8; }
+    .badge-possibly-sold { background: #6e1e1e; color: #ff9492; }
+
+    .row-possibly-sold { background: rgba(248, 81, 73, 0.08) !important; }
+    .row-possibly-sold .ag-cell { color: #f85149 !important; opacity: 0.75; }
 
     .source-chip {
       display: inline-block;
@@ -814,7 +818,14 @@
         headerName: 'VIN',
         field: 'vin',
         width: 180,
-        filter: 'agTextColumnFilter'
+        filter: 'agTextColumnFilter',
+        cellRenderer: (p) => {
+          const sold = p.data?.possiblySold;
+          if (sold) {
+            return `${p.value} <span class="badge badge-possibly-sold" title="Not found on source or dealer site since ${new Date(sold).toLocaleDateString()}">SOLD?</span>`;
+          }
+          return p.value || '';
+        }
       },
       {
         headerName: 'Link',
@@ -940,7 +951,8 @@
       tooltipShowDelay: 300,
       rowSelection: { mode: 'multiRow', checkboxes: true, headerCheckbox: true, enableClickSelection: false },
       getRowClass: (params) => {
-        if (params.data && params.data.isFavorite) return 'row-favorite';
+        if (params.data?.possiblySold) return 'row-possibly-sold';
+        if (params.data?.isFavorite) return 'row-favorite';
         return '';
       },
       onSelectionChanged: updateSelectionButtons,

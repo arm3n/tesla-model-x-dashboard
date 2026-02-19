@@ -302,7 +302,7 @@ export async function refreshVins(
   vins: { vin: string; year: number; source: string }[],
   onProgress?: ProgressCallback,
   onScraperStatus?: ScraperStatusCallback,
-): Promise<number> {
+): Promise<{ updated: number; missing: string[] }> {
   const log = (msg: string) => {
     console.log(msg);
     onProgress?.(msg);
@@ -382,6 +382,14 @@ export async function refreshVins(
     }
   }
 
+  // Identify VINs not found by any scraper — may be sold/delisted
+  const foundVins = new Set(allRaw.map(r => r.vin.toUpperCase()));
+  const missingVins = vins.filter(v => !foundVins.has(v.vin.toUpperCase()));
+  if (missingVins.length > 0) {
+    const vinList = missingVins.map(v => v.vin).join(", ");
+    log(`[rescrape] ${missingVins.length} VIN(s) not found — possibly sold/delisted: ${vinList}`);
+  }
+
   if (allRaw.length === 0) {
     log("No results to update.");
     // Still write scraper logs even with 0 results
@@ -400,7 +408,7 @@ export async function refreshVins(
         type: "rescrape",
       });
     }
-    return 0;
+    return { updated: 0, missing: missingVins.map(v => v.vin) };
   }
 
   // Normalize and upsert (Plaid only)
@@ -429,7 +437,7 @@ export async function refreshVins(
     });
   }
 
-  return plaidOnly.length;
+  return { updated: plaidOnly.length, missing: missingVins.map(v => v.vin) };
 }
 
 // Run directly

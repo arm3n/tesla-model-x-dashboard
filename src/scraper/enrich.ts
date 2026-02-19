@@ -1,4 +1,4 @@
-import { getEnrichmentCandidates, saveEnrichment, applyEnrichmentCache, clearEnrichmentCache, getListingsByVins, getEnrichmentByVin, type EnrichmentData } from "../db.ts";
+import { getEnrichmentCandidates, saveEnrichment, applyEnrichmentCache, clearEnrichmentCache, getListingsByVins, getEnrichmentByVin, clearPossiblySold, type EnrichmentData } from "../db.ts";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
@@ -173,6 +173,31 @@ async function curlFetch(url: string): Promise<string | null> {
   }
 }
 
+/** Detect dealer search pages that returned zero results */
+function isZeroResultsPage(html: string, vin: string): boolean {
+  // Common "0 results" patterns on dealer DMS platforms
+  const zeroPatterns = [
+    /0\s*vehicles?\s*(?:matching|found|available|results)/i,
+    /no\s*(?:vehicles?|results?|listings?|matches?)\s*(?:found|matching|available)/i,
+    /your\s*search.*(?:did not|didn'?t)\s*(?:match|return|find)/i,
+    /sorry.*no\s*(?:results|vehicles|listings)/i,
+    /we\s*(?:could|couldn'?t)\s*(?:not\s*)?find/i,
+  ];
+  for (const re of zeroPatterns) {
+    if (re.test(html)) return true;
+  }
+
+  // Check if VIN only appears inside input/meta/url contexts (not in vehicle data)
+  // Strip all tags and check if VIN appears in the remaining text
+  const stripped = html.replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ");
+  // If VIN doesn't appear in visible text at all, it's just in URLs/inputs
+  if (!stripped.includes(vin)) return true;
+
+  return false;
+}
+
 /** Try common dealer site search URL patterns to find a VIN */
 async function searchDealerSite(dealerDomain: string, vin: string): Promise<string | null> {
   // Common DMS search patterns (DealerSocket/Dealer.com uses /used-inventory/index.htm?search=)
@@ -185,7 +210,18 @@ async function searchDealerSite(dealerDomain: string, vin: string): Promise<stri
 
   for (const searchUrl of patterns) {
     const html = await curlFetch(searchUrl);
-    if (html && html.includes(vin)) {
+    if (!html) { await sleep(FETCH_DELAY_MS); continue; }
+
+    // The VIN will appear in the URL/search box even on "0 results" pages.
+    // Only return the HTML if the VIN appears in actual content (e.g. JSON-LD,
+    // listing cards) — not just in URLs, input values, or "0 Vehicles Matching" text.
+    if (isZeroResultsPage(html, vin)) {
+      await sleep(FETCH_DELAY_MS);
+      continue;
+    }
+
+    // Check that VIN appears in a meaningful context (JSON-LD, data attributes, listing text)
+    if (html.includes(vin)) {
       return html;
     }
     await sleep(FETCH_DELAY_MS);
@@ -462,6 +498,9 @@ async function enrichSingleVin(
     await sleep(FETCH_DELAY_MS);
     if (!html) continue;
 
+    // Skip pages that show "0 results" for this VIN
+    if (isZeroResultsPage(html, c.vin)) continue;
+
     const hasVin = html.includes(c.vin);
 
     // Only trust parsed data if the page actually mentions this VIN
@@ -554,6 +593,9 @@ export async function runEnrichment(onProgress?: EnrichProgressCallback): Promis
   await Promise.all(tasks);
 
   applyEnrichmentCache();
+  // Clear "possibly sold" flag for VINs that were successfully enriched
+  const enrichedVins = details.map(d => d.vin);
+  if (enrichedVins.length > 0) clearPossiblySold(enrichedVins);
   log(`[enrich] Done. Searched ${searched}, enriched ${enriched} of ${candidates.length} candidates`);
 
   return { candidates: candidates.length, searched, enriched, details };
@@ -597,6 +639,9 @@ export async function runEnrichmentForVins(vins: string[], onProgress?: EnrichPr
   await Promise.all(tasks);
 
   applyEnrichmentCache();
+  // Clear "possibly sold" flag for VINs that were successfully enriched
+  const enrichedVins = details.map(d => d.vin);
+  if (enrichedVins.length > 0) clearPossiblySold(enrichedVins);
   log(`[enrich] Done. Searched ${searched}, enriched ${enriched} of ${listings.length} VINs`);
 
   return { candidates: listings.length, searched, enriched, details };
