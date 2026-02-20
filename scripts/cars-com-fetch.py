@@ -303,30 +303,41 @@ async def main():
         print("__CARSCOM_PAGE_RESULTS__" + json.dumps(items) + "__END_PAGE__")
         sys.stdout.flush()
 
-    # --- Pagination ---
+    # --- Pagination (URL-based: &page=N) ---
+    # Also detect total count from the page to know when to stop
+    total_count_js = r"""
+    (() => {
+        const el = document.querySelector('[class*="total-filter-count"], .results-count, [class*="totalResultsCount"]');
+        if (el) {
+            const m = el.textContent.match(/([\d,]+)/);
+            if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+        }
+        const text = document.body.innerText || '';
+        const m = text.match(/([\d,]+)\s*(?:results?|vehicles?|listings?)\s*(?:found|matching|available)/i);
+        if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+        return 0;
+    })()
+    """
+    total_reported = await page.evaluate(total_count_js)
+    if total_reported > 0:
+        print(f"[Cars.com] Page reports {total_reported} total results", file=sys.stderr)
+
     for page_num in range(2, max_pages + 1):
         if len(items) < 20:
             # Less than a full page, likely last page
+            print(f"[Cars.com] Page {page_num - 1} had {len(items)} items (<20), stopping pagination", file=sys.stderr)
+            break
+
+        # If we already have more than reported total, stop
+        if total_reported > 0 and len(all_items) >= total_reported:
+            print(f"[Cars.com] Collected {len(all_items)} >= {total_reported} reported, stopping", file=sys.stderr)
             break
 
         await asyncio.sleep(random.uniform(3, 6))
 
-        # Check for "Next" button
-        next_js = """
-        (() => {
-            const next = document.querySelector('a[aria-label="Next"], a.next, [class*="next-page"]');
-            if (!next) return 'none';
-            next.scrollIntoView({behavior: 'smooth', block: 'center'});
-            return next.href || 'found-no-href';
-        })()
-        """
-        next_href = await page.evaluate(next_js)
-        if next_href == "none" or next_href == "found-no-href":
-            print(f"[Cars.com] No next page link, stopping after page {page_num - 1}", file=sys.stderr)
-            break
-
-        print(f"[Cars.com] Loading page {page_num}...", file=sys.stderr)
-        page = await browser.get(next_href)
+        page_url = SEARCH_URL + f"&page={page_num}"
+        print(f"[Cars.com] Loading page {page_num} via URL...", file=sys.stderr)
+        page = await browser.get(page_url)
         await asyncio.sleep(random.uniform(4, 7))
 
         if await is_blocked(page):
@@ -334,7 +345,18 @@ async def main():
             break
 
         await human_scroll(page)
+        await asyncio.sleep(1)
+        # Second scroll pass for lazy-loaded content (same as page 1)
+        count = await page.evaluate(CHECK_RESULTS_JS)
+        if count < 40:
+            await human_scroll(page)
+            await asyncio.sleep(1)
+
         items = await extract_search_listings(page, page_num)
+        if len(items) == 0:
+            print(f"[Cars.com] Page {page_num}: 0 results, stopping", file=sys.stderr)
+            break
+
         all_items.extend(items)
         print(f"[Cars.com] Page {page_num}: {len(items)} listings (total: {len(all_items)})", file=sys.stderr)
 
