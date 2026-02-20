@@ -74,7 +74,16 @@ async def fetch_api_page(page, offset, count=50):
 async def main():
     print("[Tesla] Launching undetected Chrome...", file=sys.stderr)
     browser = await uc.start(headless=False)
+    try:
+        await _run(browser)
+    finally:
+        try:
+            browser.stop()
+        except Exception:
+            pass
 
+
+async def _run(browser):
     print("[Tesla] Navigating to tesla.com...", file=sys.stderr)
     page = await browser.get("https://www.tesla.com/inventory/used/mx")
 
@@ -92,7 +101,6 @@ async def main():
 
     if not title or "Access Denied" in title or "Pardon" in title:
         print("[Tesla] Blocked by Akamai", file=sys.stderr)
-        browser.stop()
         print("__TESLA_RESULTS_START__\n[]\n__TESLA_RESULTS_END__")
         return
 
@@ -138,8 +146,6 @@ async def main():
             break
 
         await asyncio.sleep(2)
-
-    browser.stop()
 
     if not all_listings:
         print("[Tesla] 0 listings from API", file=sys.stderr)

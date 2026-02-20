@@ -250,7 +250,16 @@ async def fetch_detail_vin(browser, url, index, total):
 async def main():
     print("[Cars.com] Launching undetected Chrome...", file=sys.stderr)
     browser = await uc.start(headless=False)
+    try:
+        await _run(browser)
+    finally:
+        try:
+            browser.stop()
+        except Exception:
+            pass
 
+
+async def _run(browser):
     all_items = []
     max_pages = 5
 
@@ -266,7 +275,6 @@ async def main():
         await asyncio.sleep(random.uniform(6, 10))
         if await is_blocked(page):
             print("[Cars.com] Still blocked after retry, aborting", file=sys.stderr)
-            browser.stop()
             print("__CARSCOM_RESULTS_START__")
             print("[]")
             print("__CARSCOM_RESULTS_END__")
@@ -367,7 +375,6 @@ async def main():
     print(f"[Cars.com] Search phase complete: {len(all_items)} listings", file=sys.stderr)
 
     if not all_items:
-        browser.stop()
         print("__CARSCOM_RESULTS_START__")
         print("[]")
         print("__CARSCOM_RESULTS_END__")
@@ -421,8 +428,6 @@ async def main():
             print(f"[Cars.com] Detail progress: {i + 1}/{detail_limit} (ok={ok_count}, fail={fail_count})", file=sys.stderr)
 
     print(f"[Cars.com] Detail pages: {ok_count} ok, {fail_count} failed", file=sys.stderr)
-
-    browser.stop()
 
     # Build final results — only those with VINs
     final = [item for item in unique_items if item.get("vin") and len(item.get("vin", "")) == 17]

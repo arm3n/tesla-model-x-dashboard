@@ -1,6 +1,7 @@
 import type { RawListing } from "./types.ts";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { killProcessTree } from "./process-util.ts";
 
 const __dir =
   typeof (import.meta as any).dir === "string"
@@ -51,12 +52,12 @@ export async function scrapeCarsCom(
     env: { ...process.env },
   });
 
-  // 175s timeout — kill subprocess before the 180s refresh-level timeout
+  // 175s timeout — kill subprocess tree (Python + Chrome children)
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill();
-    const tmsg = "[Cars.com] Timed out after 175s — killed subprocess";
+    killProcessTree(proc.pid);
+    const tmsg = "[Cars.com] Timed out after 175s — killed subprocess tree";
     console.error(tmsg);
     onProgress?.(tmsg);
   }, 175_000);

@@ -1,6 +1,7 @@
 import type { RawListing } from "./types.ts";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { killProcessTree } from "./process-util.ts";
 
 const __dir =
   typeof (import.meta as any).dir === "string"
@@ -90,12 +91,12 @@ export async function scrapeEdmunds(
     env: { ...process.env },
   });
 
-  // 175s timeout — kill subprocess before the 180s refresh-level timeout hits
+  // 175s timeout — kill subprocess tree (Python + Chrome children)
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill();
-    const tmsg = "[Edmunds] Timed out after 175s — killed subprocess";
+    killProcessTree(proc.pid);
+    const tmsg = "[Edmunds] Timed out after 175s — killed subprocess tree";
     console.error(tmsg);
     onProgress?.(tmsg);
   }, 175_000);
@@ -238,12 +239,12 @@ export async function scrapeEdmundsVdp(
     env: { ...process.env },
   });
 
-  // 120s timeout (generous — each VDP takes ~10-15s)
+  // 120s timeout — kill subprocess tree (Python + Chrome children)
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill();
-    const tmsg = "[Edmunds VDP] Timed out after 120s";
+    killProcessTree(proc.pid);
+    const tmsg = "[Edmunds VDP] Timed out after 120s — killed subprocess tree";
     console.error(tmsg);
     onProgress?.(tmsg);
   }, 120_000);

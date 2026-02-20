@@ -196,6 +196,16 @@ async def extract_page_data(page, page_num, all_items, seen_vins):
 async def main():
     print("[Edmunds] Launching undetected Chrome...", file=sys.stderr)
     browser = await uc.start(headless=False)
+    try:
+        await _run(browser)
+    finally:
+        try:
+            browser.stop()
+        except Exception:
+            pass
+
+
+async def _run(browser):
 
     # Filter year=2023-2026: HW4 started late 2023, everything older is filtered
     # out by the HW4 check anyway. Reduces pages from ~64 to ~11.
@@ -223,7 +233,6 @@ async def main():
         await asyncio.sleep(random.uniform(8, 12))
         if await is_blocked(page):
             print("[Edmunds] Still blocked on page 1, aborting", file=sys.stderr)
-            browser.stop()
             print("__EDMUNDS_RESULTS_START__")
             print("[]")
             print("__EDMUNDS_RESULTS_END__")
@@ -312,8 +321,6 @@ async def main():
                 break
         else:
             consecutive_empty = 0
-
-    browser.stop()
 
     # Log samples
     for item in all_items[:3]:

@@ -180,28 +180,32 @@ async def main():
 
     print(f"[Edmunds VDP] Launching browser for {len(pairs)} VIN(s)...", file=sys.stderr)
     browser = await uc.start(headless=False)
+    try:
+        results = []
+        for i, (vin, year) in enumerate(pairs):
+            if i > 0:
+                # Human-like delay between pages
+                await asyncio.sleep(random.uniform(3, 6))
 
-    results = []
-    for i, (vin, year) in enumerate(pairs):
-        if i > 0:
-            # Human-like delay between pages
-            await asyncio.sleep(random.uniform(3, 6))
+            item = await fetch_vdp(browser, vin, year)
+            if item:
+                results.append(item)
+                print(f"[Edmunds VDP] Got data for {vin}: ${item['price']:,} {item['mileage']:,}mi", file=sys.stderr)
+                # Emit per-VIN result immediately
+                print("__VDP_RESULT__" + json.dumps(item) + "__END_VDP__")
+                sys.stdout.flush()
+            else:
+                print(f"[Edmunds VDP] No data for {vin}", file=sys.stderr)
+                # Emit a miss marker so the caller knows this VIN was attempted
+                print("__VDP_MISS__" + vin + "__END_VDP__")
+                sys.stdout.flush()
 
-        item = await fetch_vdp(browser, vin, year)
-        if item:
-            results.append(item)
-            print(f"[Edmunds VDP] Got data for {vin}: ${item['price']:,} {item['mileage']:,}mi", file=sys.stderr)
-            # Emit per-VIN result immediately
-            print("__VDP_RESULT__" + json.dumps(item) + "__END_VDP__")
-            sys.stdout.flush()
-        else:
-            print(f"[Edmunds VDP] No data for {vin}", file=sys.stderr)
-            # Emit a miss marker so the caller knows this VIN was attempted
-            print("__VDP_MISS__" + vin + "__END_VDP__")
-            sys.stdout.flush()
-
-    browser.stop()
-    print(f"[Edmunds VDP] Done — {len(results)}/{len(pairs)} VINs fetched", file=sys.stderr)
+        print(f"[Edmunds VDP] Done — {len(results)}/{len(pairs)} VINs fetched", file=sys.stderr)
+    finally:
+        try:
+            browser.stop()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
