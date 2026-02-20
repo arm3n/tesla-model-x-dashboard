@@ -651,8 +651,7 @@
     const gridDiv = document.getElementById('grid');
     let gridApi = null;
     let autoRefreshTimer = null;
-    let pollTimer = null;
-    let lastPollTime = 0;
+    let sseSource = null;
     let currentOpType = 'Refresh'; // tracks current operation for completion message
 
     const currencyFmt = new Intl.NumberFormat('en-US', {
@@ -1022,18 +1021,62 @@
       log.scrollTop = log.scrollHeight;
     }
 
-    // --- Polling for progress ---
+    // --- SSE for live progress ---
 
-    function startPolling() {
-      if (pollTimer) return;
-      lastPollTime = Date.now();
-      pollTimer = setInterval(pollProgress, 800);
+    function connectSSE() {
+      if (sseSource) return;
+      sseSource = new EventSource('/api/refresh/stream');
+      let hasError = false;
+
+      sseSource.addEventListener('init', (e) => {
+        const data = JSON.parse(e.data);
+        renderScraperTable(data.scrapers);
+      });
+
+      sseSource.addEventListener('progress', (e) => {
+        const entry = JSON.parse(e.data);
+        const cls = entry.type === 'done' ? 'done' : entry.type === 'error' ? 'error' : '';
+        addProgressLine(entry.msg, cls);
+        if (entry.type === 'error') hasError = true;
+      });
+
+      sseSource.addEventListener('scraper', (e) => {
+        const { name, status } = JSON.parse(e.data);
+        // Merge into a local scrapers map for renderScraperTable
+        if (!connectSSE._scrapers) connectSSE._scrapers = {};
+        connectSSE._scrapers[name] = status;
+        renderScraperTable(connectSSE._scrapers);
+      });
+
+      sseSource.addEventListener('done', (e) => {
+        const btn = document.getElementById('refreshBtn');
+        btn.disabled = false;
+        btn.textContent = 'Refresh Now';
+        document.getElementById('progressSpinner').style.display = 'none';
+
+        const allProgress = document.getElementById('progressLog');
+        const hasDone = allProgress?.querySelector('.done');
+        if (hasError && !hasDone) {
+          document.getElementById('progressTitle').textContent = currentOpType + ' failed';
+        } else {
+          document.getElementById('progressTitle').textContent = currentOpType + ' complete';
+        }
+        loadListings();
+        disconnectSSE();
+        hideProgress(5000);
+      });
+
+      sseSource.onerror = () => {
+        // Connection lost — close and let user retry
+        disconnectSSE();
+      };
     }
 
-    function stopPolling() {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
+    function disconnectSSE() {
+      if (sseSource) {
+        sseSource.close();
+        sseSource = null;
+        connectSSE._scrapers = null;
       }
     }
 
@@ -1072,46 +1115,6 @@
       tbody.innerHTML = rows.join('');
     }
 
-    async function pollProgress() {
-      try {
-        const res = await fetch('/api/refresh/progress?since=' + (lastPollTime - 1000));
-        const data = await res.json();
-
-        for (const entry of data.entries) {
-          if (entry.time > lastPollTime) {
-            addProgressLine(entry.msg, entry.type === 'done' ? 'done' : entry.type === 'error' ? 'error' : '');
-            lastPollTime = entry.time;
-          }
-        }
-
-        // Update per-scraper status table
-        renderScraperTable(data.scrapers);
-
-        if (!data.inProgress) {
-          const btn = document.getElementById('refreshBtn');
-          btn.disabled = false;
-          btn.textContent = 'Refresh Now';
-
-          // Check all entries from this poll (the "done" msg may have arrived in an earlier poll)
-          const allProgress = document.getElementById('progressLog');
-          const hasDone = allProgress?.querySelector('.done') || data.entries.some(e => e.type === 'done');
-          const hasError = !hasDone && (allProgress?.querySelector('.error') || data.entries.some(e => e.type === 'error'));
-
-          document.getElementById('progressSpinner').style.display = 'none';
-          if (hasError) {
-            document.getElementById('progressTitle').textContent = currentOpType + ' failed';
-          } else {
-            document.getElementById('progressTitle').textContent = currentOpType + ' complete';
-          }
-          loadListings();
-
-          stopPolling();
-          hideProgress(5000);
-        }
-      } catch {
-        // network blip, keep polling
-      }
-    }
 
     // --- Stats ---
 
@@ -1187,7 +1190,7 @@
           hideProgress(5000);
           return;
         }
-        startPolling();
+        connectSSE();
       } catch (err) {
         addProgressLine('Network error: ' + err.message, 'error');
         btn.disabled = false;
@@ -1224,7 +1227,7 @@
           hideProgress(5000);
           return;
         }
-        startPolling();
+        connectSSE();
       } catch (err) {
         addProgressLine('Network error: ' + err.message, 'error');
         btn.disabled = false;
@@ -1306,7 +1309,7 @@
           hideProgress(5000);
           return;
         }
-        startPolling();
+        connectSSE();
       } catch (err) {
         addProgressLine('Network error: ' + err.message, 'error');
         btn.disabled = false;

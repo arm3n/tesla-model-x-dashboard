@@ -16,8 +16,20 @@ let refreshLog: { time: number; msg: string; type: string }[] = [];
 let refreshSeq = 0;
 let scraperStatuses: Record<string, ScraperStatus> = {};
 
+// SSE: connected clients
+const sseClients = new Set<ReadableStreamDefaultController>();
+
+function sseEmit(event: string, data: any) {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const ctrl of sseClients) {
+    try { ctrl.enqueue(payload); } catch { sseClients.delete(ctrl); }
+  }
+}
+
 function logProgress(msg: string, type: string = "info") {
-  refreshLog.push({ time: Date.now(), msg, type });
+  const entry = { time: Date.now(), msg, type };
+  refreshLog.push(entry);
+  sseEmit("progress", entry);
 }
 
 function updateScraperStatus(name: string, status: ScraperStatus) {
@@ -27,6 +39,7 @@ function updateScraperStatus(name: string, status: ScraperStatus) {
     status.startedAt = existing.startedAt;
   }
   scraperStatuses[name] = status;
+  sseEmit("scraper", { name, status });
 }
 
 const server = Bun.serve({
@@ -64,7 +77,7 @@ const server = Bun.serve({
       });
     }
 
-    // Poll-based progress endpoint
+    // Poll-based progress endpoint (legacy)
     if (url.pathname === "/api/refresh/progress") {
       const since = parseInt(url.searchParams.get("since") ?? "0", 10);
       const newEntries = refreshLog.filter((e) => e.time > since);
@@ -73,6 +86,30 @@ const server = Bun.serve({
         seq: refreshSeq,
         entries: newEntries,
         scrapers: scraperStatuses,
+      });
+    }
+
+    // SSE stream for live refresh progress
+    if (url.pathname === "/api/refresh/stream") {
+      const stream = new ReadableStream({
+        start(controller) {
+          sseClients.add(controller);
+          // Send current state on connect
+          controller.enqueue(`event: init\ndata: ${JSON.stringify({
+            inProgress: refreshInProgress,
+            scrapers: scraperStatuses,
+          })}\n\n`);
+        },
+        cancel(controller) {
+          sseClients.delete(controller);
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
       });
     }
 
@@ -308,6 +345,7 @@ const server = Bun.serve({
         })
         .finally(() => {
           refreshInProgress = false;
+          sseEmit("done", { inProgress: false });
         });
 
       return Response.json({ success: true, message: "Enrichment started" });
@@ -379,6 +417,7 @@ const server = Bun.serve({
         })
         .finally(() => {
           refreshInProgress = false;
+          sseEmit("done", { inProgress: false });
         });
 
       return Response.json({ success: true, message: "Enrichment started" });
@@ -494,6 +533,7 @@ const server = Bun.serve({
           })
           .finally(() => {
             refreshInProgress = false;
+          sseEmit("done", { inProgress: false });
           });
       } else {
         // Full refresh mode
@@ -512,6 +552,7 @@ const server = Bun.serve({
           })
           .finally(() => {
             refreshInProgress = false;
+          sseEmit("done", { inProgress: false });
           });
       }
 
