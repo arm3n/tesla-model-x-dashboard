@@ -228,7 +228,7 @@ async def fetch_detail_vin(browser, url, index, total):
     """Navigate to a detail page and extract VIN + colors."""
     try:
         page = await browser.get(url)
-        await asyncio.sleep(random.uniform(3, 5))
+        await asyncio.sleep(random.uniform(2, 3.5))
 
         if await is_blocked(page):
             print(f"[Cars.com] Detail {index}/{total} blocked", file=sys.stderr)
@@ -416,6 +416,9 @@ async def _run(browser):
                 item["location"] = detail["location"]
             ok_count += 1
             consecutive_fail = 0
+            # Stream each completed detail item immediately for timeout resilience
+            print("__CARSCOM_PAGE_RESULTS__" + json.dumps([item]) + "__END_PAGE__")
+            sys.stdout.flush()
         else:
             fail_count += 1
             consecutive_fail += 1
@@ -426,6 +429,8 @@ async def _run(browser):
 
         if (i + 1) % 10 == 0:
             print(f"[Cars.com] Detail progress: {i + 1}/{detail_limit} (ok={ok_count}, fail={fail_count})", file=sys.stderr)
+            # Periodic long pause every 10th detail page to break timing patterns
+            await asyncio.sleep(random.uniform(5, 8))
 
     print(f"[Cars.com] Detail pages: {ok_count} ok, {fail_count} failed", file=sys.stderr)
 

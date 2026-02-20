@@ -52,15 +52,16 @@ export async function scrapeCarsCom(
     env: { ...process.env },
   });
 
-  // 175s timeout — kill subprocess tree (Python + Chrome children)
+  // 295s timeout — kill subprocess tree (Python + Chrome children)
+  // Outer timeout in refresh.ts is 325s (30s gap for process tree cleanup)
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     killProcessTree(proc.pid);
-    const tmsg = "[Cars.com] Timed out after 175s — killed subprocess tree";
+    const tmsg = "[Cars.com] Timed out after 295s — killed subprocess tree";
     console.error(tmsg);
     onProgress?.(tmsg);
-  }, 175_000);
+  }, 295_000);
 
   const results: RawListing[] = [];
 
